@@ -35,5 +35,5 @@ implements_traits!(d #[derive(Eq, PartialEq, ..Ord, std::hash::Hash, ..Together)
 implements_traits!(e #[derive_aliases::derive(..Eq)] => Eq, PartialEq);
 
 fn main() {
-    panic!("run `cargo test`")
+    println!("it compiles!")
 }
