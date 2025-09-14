@@ -1,0 +1,9 @@
+[package]
+name = "tests"
+description = "tests for `derive_aliases`"
+publish = false
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+derive_aliases = { path = ".." }

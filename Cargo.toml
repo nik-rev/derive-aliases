@@ -1,6 +1,12 @@
 [package]
 name = "derive_aliases"
+description = "Extremely simple and ergonomic derive aliases"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Nik Revenco <pm@nikrev.com>"]
+repository = "https://github.com/nik-rev/derive-aliases"
+license = "MIT OR Apache-2.0"
+keywords = ["macros", "derive", "alias"]
 
-[dependencies]
+[lib]
+proc-macro = true
