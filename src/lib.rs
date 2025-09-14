@@ -267,29 +267,16 @@ mod tests {
                 ),
                 (
                     "Eq".to_string(),
-                    vec![
-                        "PartialEq".to_string(),
-                        "Eq".to_string(),
-                        "Copy".to_string()
-                    ]
+                    vec!["PartialEq".to_string(), "Eq".to_string(),]
                 ),
                 (
                     "Ord".to_string(),
                     vec![
                         "PartialOrd".to_string(),
                         "Ord".to_string(),
-                        "Copy".to_string()
+                        "..Eq".to_string()
                     ]
                 ),
-                (
-                    "All".to_string(),
-                    vec!(
-                        "..Copy".to_string(),
-                        "..Eq".to_string(),
-                        "..FastHash".to_string(),
-                        "std::hash::Hash".to_string()
-                    )
-                )
             ])
         );
     }
