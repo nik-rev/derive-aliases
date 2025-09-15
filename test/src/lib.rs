@@ -1,4 +1,5 @@
 #![allow(warnings)]
+#![cfg(test)]
 
 #[macro_use]
 extern crate derive_aliases;
@@ -34,6 +35,6 @@ implements_traits!(d #[derive(Eq, PartialEq, ..Ord, std::hash::Hash, ..Together)
 // Works with full path reference
 implements_traits!(e #[derive_aliases::derive(..Eq)] => Eq, PartialEq);
 
-fn main() {
-    println!("it compiles!")
-}
+#[cfg(test)]
+#[test]
+fn it_compiles() {}

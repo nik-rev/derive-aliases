@@ -312,7 +312,14 @@ fn parse_my_little_rust(s: &str) -> HashMap<String, Vec<String>> {
 
     // 3. Split on ';'
     for stmt in cleaned.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some((alias_name, alias_value)) = stmt.split_once('=') {
+        if let Some(path) = stmt.strip_prefix("use") {
+            let path = path.trim();
+            let path = path.strip_prefix('"').expect("`use` expects a string");
+            let path = path.strip_suffix('"').expect("`use` expects a string");
+            let other_contents = std::fs::read_to_string(path)
+                .unwrap_or_else(|err| panic!("failed to read derive aliases at {path}: {err}"));
+            aliases.extend(parse_my_little_rust(&other_contents));
+        } else if let Some((alias_name, alias_value)) = stmt.split_once('=') {
             let alias_name = alias_name.trim().to_string();
 
             // Each RHS is `A , B , C`
@@ -323,6 +330,8 @@ fn parse_my_little_rust(s: &str) -> HashMap<String, Vec<String>> {
                 .collect();
 
             aliases.insert(alias_name, expansions);
+        } else {
+            panic!("invalid derive alias file")
         }
     }
 
