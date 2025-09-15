@@ -1,4 +1,76 @@
-//! Derive aliases
+//! # `derive_aliases`
+//!
+//! `#[derive]` aliases for reducing code boilerplate
+//!
+//! Aliases are defined in a special file `derive_aliases.rs`, located next to your **crate**'s `Cargo.toml`:
+//!
+//! ```rs,ignore
+//! // Simple derive aliases
+//! //
+//! // `#[derive(..Copy, ..Eq)]` expands to `#[std::derive(Copy, Clone, PartialEq, Eq)]`
+//!
+//! Copy = Copy, Clone;
+//! Eq = PartialEq, Eq;
+//!
+//! // You can nest them!
+//! //
+//! // `#[derive(..Ord, std::hash::Hash)]` expands to `#[std::derive(PartialOrd, Ord, PartialEq, Eq, std::hash::Hash)]`
+//!
+//! Ord = PartialOrd, Ord, ..Eq;
+//! ```
+//!
+//! This file uses a tiny domain-specific language for defining the derive aliases (the parser is less than 20 lines of code!). `.rs` is used just for syntax highlighting.
+//! These aliases can then be used in Rust like so:
+//!
+//! ```rs,ignore
+//! // This globally overrides `std::derive` with `derive_aliases::derive` across the whole crate! Handy.
+//! #[macro_use]
+//! extern crate derive_aliases;
+//!
+//! #[derive(..Copy, ..Ord, std::hash::Hash)]
+//! struct HelloWorld;
+//! ```
+//!
+//! This expands to:
+//!
+//! ```rs
+//! #[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq, std::hash::Hash)]
+//! struct HelloWorld;
+//! ```
+//!
+//! # Single `derive_aliases.rs` in Cargo Workspaces
+//!
+//! If you want to use the same `derive_aliases.rs` for all crates in your Cargo workspace, enable the `workspace` feature then define the `CARGO_WORKSPACE_DIR` env variable in `.cargo/config.toml`:
+//!
+//! ```toml
+//! [env]
+//! CARGO_WORKSPACE_DIR = { value = "", relative = true }
+//! ```
+//!
+//! # `use` other alias files in `derive_aliases.rs`
+//!
+//! `use` followed by a path will inline the derive aliases located in that file.
+//!
+//! If `../my_other_aliases.rs` contains:
+//!
+//! ```rs
+//! Ord = PartialOrd, Ord, ..Eq;
+//! ```
+//!
+//! And your `derive_aliases.rs` has:
+//!
+//! ```rs
+//! use "../my_other_aliases.rs";
+//!
+//! Eq = PartialEq, Eq;
+//! ```
+//!
+//! Then it will inline the aliases in the other file, expanding to:
+//!
+//! ```rs
+//! Ord = PartialOrd, Ord, ..Eq;
+//! Eq = PartialEq, Eq;
+//! ```
 
 use proc_macro::{Delimiter, Group, Ident, Punct, Spacing, Span, TokenStream, TokenTree};
 use std::{
@@ -159,15 +231,20 @@ static ALIASES: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
 /// Retrieve the map that contains derive aliases
 fn get_aliases() -> &'static HashMap<String, Vec<String>> {
     ALIASES.get_or_init(|| {
-        let Ok(manifest_dir) = std::env::var("CARGO_WORKSPACE_DIR") else {panic!(concat!(
+        #[cfg(not(feature = "workspace"))]
+        let Ok(dir) = std::env::var("CARGO_WORKSPACE_DIR") else {panic!(concat!(
             "\n\n`CARGO_WORKSPACE_DIR` environment variable must be set, which points to the directory containing the\n",
             "workspace `Cargo.toml`. Since cargo currently doesn't set this variable, in your workspace create `.cargo/config.toml` with contents:\n",
             "\n",
             "[env]\n",
             "CARGO_WORKSPACE_DIR = {{ value = \"\", relative = true }}\n",
         ))};
+        #[cfg(feature = "workspace")]
+        let Ok(dir) = std::env::var("CARGO_MANIFEST_DIR") else {
+            panic!("env variable `CARGO_MANIFEST_DIR` must be set, which points to the directory containing your crate's `Cargo.toml`. Cargo supplies this env variable by default")
+        };
 
-        let path = std::path::Path::new(&manifest_dir).join("derive_aliases.rs");
+        let path = std::path::Path::new(&dir).join("derive_aliases.rs");
 
         let content = std::fs::read_to_string(&path).unwrap_or_else(|err| {
             panic!(

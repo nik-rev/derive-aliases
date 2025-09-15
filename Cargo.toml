@@ -1,6 +1,6 @@
 [package]
 name = "derive_aliases"
-description = "Extremely simple and ergonomic derive aliases"
+description = "`#[derive]` aliases for reducing code boilerplate"
 version = "0.1.0"
 edition = "2021"
 authors = ["Nik Revenco <pm@nikrev.com>"]
@@ -10,3 +10,6 @@ keywords = ["macros", "derive", "alias"]
 
 [lib]
 proc-macro = true
+
+[features]
+workspace = []
