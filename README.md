@@ -13,6 +13,8 @@ This crate provides `#[derive]` aliases for reducing code boilerplate.
   - Use alias: `#[derive(Debug, ..Copy)]` expands to `#[std::derive(Debug, Copy, Clone)]`
 - Very fast compile times, we don't pull *any* dependencies as our parsing logic is very simple
 - Hovering on the aliases shows you documentation on what they expand into
+- When you have 2 aliases that both try to derive the same trait, it won't be a compile error. The derives will be nicely merged together.
+- You don't need to import it in every module! With `#[macro_use] extern crate derive_aliases` at the top of `lib.rs`, the standard library `derive` is globally replaced by `derive_aliases::derive`
 
 # Usage
 
