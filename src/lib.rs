@@ -1,5 +1,3 @@
-//! # `derive_aliases`
-//!
 //! `#[derive]` aliases for reducing code boilerplate
 //!
 //! Aliases are defined in a special file `derive_aliases.rs`, located next to your **crate**'s `Cargo.toml`:
