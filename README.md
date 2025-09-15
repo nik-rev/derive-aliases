@@ -99,6 +99,10 @@ Ord = PartialOrd, Ord, ..Eq;
 Eq = PartialEq, Eq;
 ```
 
+# Minimum Supported Rust Version (MSRV)
+
+1.80
+
 # Alternatives
 
 - [`macro_rules_attribute`](https://docs.rs/macro_rules_attribute/latest/macro_rules_attribute/macro.derive_alias.html)
