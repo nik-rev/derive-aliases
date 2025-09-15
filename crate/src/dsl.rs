@@ -26,14 +26,30 @@
 //! ```
 
 use std::mem;
+use std::path::Path;
 use std::str::Chars;
 use std::{ops::Range, path::PathBuf, sync::Arc};
+
+/// Example file for the DSL
+pub const EXAMPLE: &str = "\
+// Simple derive aliases
+//
+// `#[derive(..Copy, ..Eq)]` expands to `#[std::derive(Copy, Clone, PartialEq, Eq)]`
+
+Copy = Copy, Clone;
+Eq = PartialEq, Eq;
+
+// You can nest them!
+//
+// `#[derive(..Ord, std::hash::Hash)]` expands to `#[std::derive(PartialOrd, Ord, PartialEq, Eq, std::hash::Hash)]`
+
+Ord = PartialOrd, Ord, ..Eq;";
 
 mod token {
     use super::Span;
 
     /// `"cfg"`
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Eq, Hash, PartialEq)]
     pub struct Cfg(pub Span);
     /// `"use"`
     #[derive(Debug, Clone)]
@@ -54,60 +70,60 @@ mod token {
 
 /// A list of `T`s separated by `Sep`.
 #[derive(Debug, Clone)]
-struct Separated<T, Sep> {
+pub struct Separated<T, Sep> {
     /// The first `T` does not have any punctuation
-    first: T,
+    pub first: T,
     /// Each `T` with a punctuation before it
-    items: Vec<(Sep, T)>,
+    pub items: Vec<(Sep, T)>,
 }
 
 /// Represents a location for use in error reporting
-#[derive(Debug, Clone)]
-struct Span {
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub struct Span {
     /// Byte offset in the source file
-    location: Range<usize>,
+    pub location: Range<usize>,
     /// File that this span belongs to
-    file: Arc<PathBuf>,
+    pub file: Arc<PathBuf>,
 }
 
 /// An identifier
-#[derive(Debug, Clone)]
-struct Ident {
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub struct Ident {
     /// Name of this identifier
-    name: String,
+    pub name: String,
     /// Span of the identifier
-    span: Span,
+    pub span: Span,
 }
 
 /// Path to derive, like `std::hash::Hash`
 #[derive(Debug, Clone)]
-struct Derive {
+pub struct Derive {
     /// Span of the entire derive
-    span: Span,
+    pub span: Span,
     /// `Some(span)` if we have the first `"::"`. It is optional
-    leading_colon: Option<token::Colon>,
+    pub leading_colon: Option<token::Colon>,
     /// Components, separated by `"::"`
-    components: Separated<Ident, token::Colon>,
+    pub components: Separated<Ident, token::Colon>,
 }
 
 /// An alias, which expands to 1 or more `Aliased`s
-#[derive(Debug, Clone)]
-struct Alias(Ident);
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub struct Alias(pub Ident);
 
 /// An alias expansion, `..Alias`
 #[derive(Debug, Clone)]
-struct AliasExpansion {
+pub struct AliasExpansion {
     /// first `.`
-    dot_1: token::Dot,
+    pub dot_1: token::Dot,
     /// second `.`
-    dot_2: token::Dot,
+    pub dot_2: token::Dot,
     /// Alias e.g. `Alias`
-    alias: Alias,
+    pub alias: Alias,
 }
 
 /// What an alias expands to
 #[derive(Debug, Clone)]
-enum AliasedItem {
+pub enum AliasedItem {
     /// Path to derive, like `std::hash::Hash`
     Derive(Derive),
     /// An alias expansion, `..Alias`
@@ -115,88 +131,107 @@ enum AliasedItem {
 }
 
 /// Configuration predicate, passed verbatim to Rust
-#[derive(Debug, Clone)]
-struct Cfg {
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+pub struct Cfg {
     /// Span of the entire configuration predicate
-    span: Span,
+    pub span: Span,
     /// The `"cfg"` keyword
-    keyword: token::Cfg,
+    pub keyword: token::Cfg,
     /// Content inside `#[cfg(<-- here -->)]`
-    cfg: String,
+    pub cfg: String,
+}
+
+impl PartialOrd for Cfg {
+    fn partial_cmp(&self, other: &Cfg) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Cfg {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.cfg.cmp(&other.cfg)
+    }
 }
 
 /// A single aliased item
 #[derive(Debug, Clone)]
-struct Aliased {
+pub struct Aliased {
     /// Span of the aliased contents
-    span: Span,
+    pub span: Span,
     /// `#[cfg(...)]` that must be activated
-    cfg: Option<Cfg>,
+    pub cfg: Option<Cfg>,
     /// The item that is aliased
-    item: AliasedItem,
+    pub item: AliasedItem,
 }
 
 /// Declaration for a new alias
+///
+/// ```
+/// MyAlias = #[cfg(feature = "foo")] Copy, Clone, ..Eq;
+/// ^^^^^^^ alias
+///           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ aliased
+/// ```
 #[derive(Debug, Clone)]
-struct AliasDeclaration {
-    cfg: Option<Cfg>,
+pub struct AliasDeclaration {
+    /// `#[cfg(...)]` that must be activated
+    pub cfg: Option<Cfg>,
     /// Span of the entire declaration
-    span: Span,
+    pub span: Span,
     /// Name of the alias we are declaring
-    alias: Alias,
+    pub alias: Alias,
     /// `"="` token
-    eq_token: token::Eq,
+    pub eq_token: token::Eq,
     /// All aliased items
-    aliased: Separated<Aliased, token::Comma>,
+    pub aliased: Separated<Aliased, token::Comma>,
     /// Trailing `","` after the aliased
-    trailing_comma: Option<token::Comma>,
+    pub trailing_comma: Option<token::Comma>,
 }
 
 /// `"use"` with a string to inline that file's contents
 #[derive(Debug, Clone)]
-struct Import {
+pub struct Import {
     /// Location of the import statement
-    span: Span,
+    pub span: Span,
     /// The `"use"`
-    use_token: token::Use,
+    pub use_token: token::Use,
     /// Path that we are importing
-    path: Arc<PathBuf>,
+    pub path: Arc<PathBuf>,
 }
 
 /// A single statemen
 #[derive(Debug, Clone)]
-enum Stmt {
+pub enum Stmt {
     /// Alias declaration
-    AliasDeclaration(Box<AliasDeclaration>),
+    AliasDeclaration(AliasDeclaration),
     /// Import statement to inline the contents of another derive alias file
     Import(Import),
 }
 
 /// The entire Derive Alias DSL syntax tree
 #[derive(Debug, Clone)]
-struct File {
+pub struct File {
     /// Span of the full file
-    span: Span,
+    pub span: Span,
     /// List of statements in the file
-    stmts: Vec<Stmt>,
+    pub stmts: Vec<Stmt>,
     /// Encountered errors while parsing the file
-    errors: Vec<ParseError>,
+    pub errors: Vec<ParseError>,
 }
 
 /// Error encountered while parsing
 #[derive(Debug, Clone)]
-struct ParseError {
+pub struct ParseError {
     /// Location of the error
-    span: Span,
+    pub span: Span,
     /// Error message
-    message: String,
+    pub message: String,
 }
 
 /// Functions return `Result<T, EncounteredParseError>` as we internally keep a list of errors, for better recovery
-struct EncounteredParseError;
+pub struct EncounteredParseError;
 
 /// Parser of our Derive Aliases DSL
-struct Parser<'a> {
+pub struct Parser<'a> {
     /// Original source code
     source: &'a str,
     /// Characters iterator over the source code
@@ -398,9 +433,9 @@ impl<'a> Parser<'a> {
             self.skip_noise();
 
             if self.peek() == Some('=') {
-                return Ok(Stmt::AliasDeclaration(Box::new(
+                return Ok(Stmt::AliasDeclaration(
                     self.parse_alias_declaration(cfg, ident)?,
-                )));
+                ));
             } else if ident_name == "use" {
                 if cfg.is_some() {
                     let err_start = start_offset;
@@ -834,42 +869,41 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub fn parse_file(source: &str, file_path: PathBuf) -> File {
-    let file_arc = Arc::new(file_path);
-    let mut parser = Parser::new(source, file_arc);
+pub fn parse_single_file(source: impl AsRef<str>, file_path: impl AsRef<Path>) -> File {
+    let file_arc = Arc::new(file_path.as_ref().to_path_buf());
+    let mut parser = Parser::new(source.as_ref(), file_arc);
     parser.parse_file()
 }
 
-pub fn render_errors(file: &File, source: &str) -> String {
-    let mut errors_string = String::new();
-    let file_path = file.span.file.to_string_lossy();
+/// Render a single error, showing span information and location in the source file
+pub fn render_error(error: &ParseError, file: impl AsRef<str>, source: impl AsRef<str>) -> String {
+    let mut rendered_error = String::new();
+    let source = source.as_ref();
+    let file = file.as_ref();
+    let span = &error.span;
+    let start_line = source[..span.location.start].lines().count();
+    let start_col = source[..span.location.start]
+        .chars()
+        .rev()
+        .take_while(|c| *c != '\n')
+        .count();
 
-    for error in &file.errors {
-        let span = &error.span;
-        let start_line = source[..span.location.start].lines().count();
-        let start_col = source[..span.location.start]
-            .chars()
-            .rev()
-            .take_while(|c| *c != '\n')
-            .count();
+    rendered_error.push_str(&format!(
+        "[{file}:{start_line}:{start_col}] Parse Error: {}:\n\n",
+        error.message
+    ));
 
-        errors_string.push_str(&format!(
-            "[{file_path}:{start_line}:{start_col}] Parse Error: {}:\n\n",
-            error.message
-        ));
+    let line_content = source
+        .lines()
+        .nth(start_line.saturating_sub(1))
+        .unwrap_or("");
+    rendered_error.push_str(&format!("  {line_content}\n"));
 
-        let line_content = source
-            .lines()
-            .nth(start_line.saturating_sub(1))
-            .unwrap_or("");
-        errors_string.push_str(&format!("  {line_content}\n"));
+    let indicator_len = source[span.location.start..span.location.end].len();
+    let indicator = format!("{: >start_col$}{}", "", "^".repeat(indicator_len.max(1)));
+    rendered_error.push_str(&format!("  {indicator}\n"));
 
-        let indicator_len = source[span.location.start..span.location.end].len();
-        let indicator = format!("{: >start_col$}{}", "", "^".repeat(indicator_len.max(1)));
-        errors_string.push_str(&format!("  {indicator}\n"));
-    }
-
-    errors_string
+    rendered_error
 }
 
 #[cfg(test)]
@@ -879,9 +913,15 @@ mod tests {
 
     fn parse_and_check_errors(source: &str) -> File {
         let file_path = PathBuf::from("derive_alias.rs");
-        let file = parse_file(source, file_path);
+        let file = parse_single_file(source, file_path);
         if !file.errors.is_empty() {
-            eprintln!("{}", render_errors(&file, source));
+            eprintln!(
+                "{}",
+                file.errors
+                    .iter()
+                    .map(|err| render_error(err, file.span.file.to_string_lossy(), source))
+                    .collect::<String>()
+            );
         }
         file
     }
