@@ -70,19 +70,233 @@
 //! Eq = PartialEq, Eq;
 //! ```
 
-use proc_macro::{Delimiter, Group, Ident, Punct, Spacing, Span, TokenStream, TokenTree};
+use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 use std::{
     collections::{HashMap, HashSet},
-    sync::OnceLock,
+    sync::{atomic::AtomicUsize, LazyLock},
 };
 
-/// `#[derive]` that supports derive aliases
+/// `#[derive]` that supports derive aliases: `..Alias`
 ///
 /// See the [crate-level](crate) documentation for more info
 #[proc_macro_attribute]
 pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
+    expand_aliases(attr)
+        .into_iter()
+        .chain(item)
+        .collect::<TokenStream>()
+}
+
+/// Generates `#[doc = $doc]`
+fn add_doc(ts: &mut TokenStream, doc: impl AsRef<str>) {
+    ts.extend(TokenStream::from_iter([
+        TokenTree::Punct(Punct::new('#', Spacing::Joint)),
+        TokenTree::Group(Group::new(
+            Delimiter::Bracket,
+            TokenStream::from_iter([
+                TokenTree::Ident(Ident::new("doc", Span::call_site())),
+                TokenTree::Punct(Punct::new('=', Spacing::Alone)),
+                TokenTree::Literal(Literal::string(doc.as_ref())),
+            ]),
+        )),
+    ]));
+}
+
+fn compile_error(ts: &mut TokenStream, span: Span, msg: impl AsRef<str>) {
+    ts.extend([
+        TokenTree::Ident(Ident::new("compile_error", span)),
+        TokenTree::Punct({
+            let mut punct = Punct::new('!', Spacing::Alone);
+            punct.set_span(span);
+            punct
+        }),
+        TokenTree::Group({
+            let mut group = Group::new(Delimiter::Brace, {
+                TokenStream::from_iter(vec![TokenTree::Literal({
+                    let mut string = Literal::string(msg.as_ref());
+                    string.set_span(span);
+                    string
+                })])
+            });
+            group.set_span(span);
+            group
+        }),
+    ]);
+}
+
+/// Expand derive aliases recursively and deduplicate
+fn expand_aliases(input: TokenStream) -> TokenStream {
+    let mut seen = HashSet::new();
+
+    // Stuff we receive as derive input, aka everything inside of `#[derive(<--here-->)]`
+    let mut input = input.into_iter().peekable();
+
+    // The stuff our proc macro outputs
+    let mut output = TokenStream::new();
+
+    // This is the `struct` that contains documentation about all
+    let mut documented_items = Vec::new();
+
+    while let Some(tt) = input.next() {
+        let TokenTree::Punct(ref p) = tt else {
+            output.extend([tt]);
+            continue;
+        };
+
+        if p.as_char() != '.' {
+            output.extend([tt]);
+            continue;
+        }
+
+        let Some(next) = input.next_if(|tt| {
+            if let TokenTree::Punct(dot) = tt {
+                dot.as_char() == '.'
+            } else {
+                false
+            }
+        }) else {
+            compile_error(
+                &mut output,
+                p.span(),
+                "after `.` we expect `.` followed by a derive alias, for example: `..Alias`",
+            );
+            continue;
+        };
+
+        // At this point, we have a `..` so we can absolutely certain that it is an alias
+
+        // consume the identifier
+        let Some(TokenTree::Ident(alias)) = input.next() else {
+            compile_error(
+                &mut output,
+                next.span(),
+                "after `..` we expect a derive alias, for example: `..Alias`",
+            );
+            continue;
+        };
+
+        let alias_string = alias.to_string();
+
+        // All aliased that this alias aliases (lol)
+        let Some(list_of_aliased) = DERIVE_ALIASES.get(&alias_string) else {
+            let available = DERIVE_ALIASES
+                .keys()
+                .enumerate()
+                .flat_map(|(i, key)| {
+                    // intersperse
+                    if i == 0 {
+                        vec![key.as_str()]
+                    } else {
+                        vec![", ", key.as_str()]
+                    }
+                })
+                .collect::<String>();
+            compile_error(
+                &mut output,
+                alias.span(),
+                format!(
+                    "the alias {alias_string} is not defined.\n\navailable aliases: {available}",
+                ),
+            );
+            continue;
+        };
+
+        let mut alias_documentation = TokenStream::new();
+
+        // generate: #[doc(hidden)]
+        alias_documentation.extend([
+            TokenTree::Punct(Punct::new('#', Spacing::Joint)),
+            TokenTree::Group(Group::new(
+                Delimiter::Bracket,
+                TokenStream::from_iter([
+                    TokenTree::Ident(Ident::new("doc", Span::call_site())),
+                    TokenTree::Group(Group::new(
+                        Delimiter::Parenthesis,
+                        TokenStream::from_iter([TokenTree::Ident(Ident::new(
+                            "hidden",
+                            Span::mixed_site(),
+                        ))]),
+                    )),
+                ]),
+            )),
+        ]);
+
+        // Single line of documentation at the top
+
+        add_doc(
+            &mut alias_documentation,
+            format!(
+                concat!(
+                    "Derive alias `{}` (crate: `derive_aliases`)",
+                    ", it expands to the following derives:\n"
+                ),
+                alias_string
+            ),
+        );
+
+        // Generate a single line of Documentation `#[doc = ...]" for each Derive that this Alias expands to, recursively
+        // Also push all of those derives into a token stream
+
+        let mut is_first_derive = true;
+        for derive in list_of_aliased {
+            // This is not an alias, it is a concrete derive
+
+            // 1. If this derive has already been generated by an alias, ignore it
+            if seen.contains(derive) {
+                continue;
+            }
+            seen.insert(derive);
+
+            // 2. Add a single line of documentation
+            add_doc(&mut alias_documentation, format!("- [`{derive}`]"));
+
+            // 3. Add the actual derive into the `#[std::derive(...)]` token stream
+            for (i, part) in derive.split("::").enumerate() {
+                // if this is NOT the first derive, AND it is the first segment, add a leading comma
+                //
+                // so e.g
+                //
+                // `derive(std::marker::Copy, std::hash::Hash)` will only insert a comma in the beginning
+                //                          ^ this comma
+                //
+                // The outer loop that would iterate over the `std::marker::Copy` and `std::hash::Hash`
+                // The inner loop (THIS one) would iterate over [`std`, `marker`, `copy`] and the 2nd iteration [`std`, `hash`, `Hash`]
+                if !is_first_derive && i == 0 {
+                    output.extend([TokenTree::Punct(Punct::new(',', Spacing::Alone))]);
+                }
+                // Add path segment if we are NOT at the beginning
+                if i > 0 {
+                    output.extend([
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                    ]);
+                }
+                output.extend([TokenTree::Ident(Ident::new(part, Span::call_site()))]);
+                is_first_derive = false;
+            }
+        }
+
+        // This is the `struct` who's entire purpose is just to document what this alias expands to
+        alias_documentation.extend([
+            TokenTree::Ident(Ident::new("struct", Span::call_site())),
+            TokenTree::Ident(Ident::new(
+                &format!(
+                    "{alias_string}__derive__alias__{}",
+                    // when we use the same alias multiple times in the same module, we don't want names of the generated documentation
+                    // items to clash
+                    ALIASES_OUTPUTTED.fetch_add(1, std::sync::atomic::Ordering::Acquire)
+                ),
+                // when user hovers over the alias, they'll actually see docs for what it produces!
+                alias.span(),
+            )),
+            TokenTree::Punct(Punct::new(';', Spacing::Alone)),
+        ]);
+
+        documented_items.push(alias_documentation);
+    }
+
     // #[::std::prelude::v1::derive(<list of derive macros>)]
-    [
+    let output = TokenStream::from_iter([
         TokenTree::Punct(Punct::new('#', Spacing::Joint)),
         TokenTree::Group(Group::new(
             Delimiter::Bracket,
@@ -99,161 +313,88 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
                 TokenTree::Ident(Ident::new("derive", Span::call_site())),
-                TokenTree::Group(Group::new(Delimiter::Parenthesis, expand_aliases(attr))),
+                TokenTree::Group(Group::new(Delimiter::Parenthesis, output)),
             ]),
         )),
-    ]
-    .into_iter()
-    .chain(item)
-    .collect::<TokenStream>()
+    ]);
+
+    let a = documented_items
+        .into_iter()
+        .flatten()
+        .chain(output)
+        .collect::<TokenStream>();
+
+    // panic!("{a}");
+
+    a
 }
 
-/// Expand derive aliases recursively and deduplicate
-fn expand_aliases(input: TokenStream) -> TokenStream {
-    let map = get_aliases();
-
-    let mut seen = HashSet::<String>::new();
-    let mut results = Vec::<String>::new();
-
-    let mut tokens = input.into_iter().peekable();
-
-    while let Some(tt) = tokens.next() {
-        match &tt {
-            // Skip commas (we will insert them later ourselves)
-            TokenTree::Punct(p) if p.as_char() == ',' => {}
-
-            // Alias: starts with `..Alias`
-            TokenTree::Punct(p) if p.as_char() == '.' => {
-                if let Some(TokenTree::Punct(p2)) = tokens.peek() {
-                    if p2.as_char() == '.' {
-                        tokens.next(); // consume second dot
-                        if let Some(TokenTree::Ident(alias_ident)) = tokens.next() {
-                            expand_name(&alias_ident.to_string(), map, &mut seen, &mut results);
-                        }
-                        continue;
-                    }
-                }
-                results.push(".".to_string());
-            }
-
-            // Identifier → could be an alias or a path
-            TokenTree::Ident(id) => {
-                let mut path = id.to_string();
-
-                loop {
-                    let mut clone_iter = tokens.clone();
-                    match (clone_iter.next(), clone_iter.next(), clone_iter.next()) {
-                        (
-                            Some(TokenTree::Punct(p1)),
-                            Some(TokenTree::Punct(p2)),
-                            Some(TokenTree::Ident(next_id)),
-                        ) if p1.as_char() == ':' && p2.as_char() == ':' => {
-                            // consume 2x punct + ident
-                            tokens.next();
-                            tokens.next();
-                            tokens.next();
-                            path.push_str("::");
-                            path.push_str(&next_id.to_string());
-                        }
-                        _ => break,
-                    }
-                }
-
-                expand_name(&path, map, &mut seen, &mut results);
-            }
-
-            // Anything else: just push its string form
-            other => {
-                let s = other.to_string();
-                if seen.insert(s.clone()) {
-                    results.push(s);
-                }
-            }
-        }
-    }
-
-    // Convert results into tokens again
-    let mut out = Vec::new();
-    for (i, path) in results.into_iter().enumerate() {
-        if i > 0 {
-            out.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
-        }
-        out.extend(make_path(&path));
-    }
-
-    out.into_iter().collect()
-}
-
-/// Recursively expand alias -> paths
-fn expand_name(
-    name: &str,
-    map: &HashMap<String, Vec<String>>,
-    seen: &mut HashSet<String>,
-    results: &mut Vec<String>,
-) {
-    if let Some(expansion) = map.get(name) {
-        for path in expansion {
-            if let Some(alias_name) = path.strip_prefix("..") {
-                // recurse into alias
-                expand_name(alias_name, map, seen, results);
-            } else if seen.insert(path.clone()) {
-                // treat as a real derive path
-                results.push(path.clone());
-            }
-        }
-    } else if let Some(alias_name) = name.strip_prefix("..") {
-        // direct reference like `..Alias`
-        expand_name(alias_name, map, seen, results);
-    } else if seen.insert(name.to_string()) {
-        // not an alias, just push the raw name
-        results.push(name.to_string());
-    }
-}
-
-/// Convert a string like "zerocopy::IntoBytes" into tokens representing the path
-fn make_path(path: &str) -> Vec<TokenTree> {
-    let mut out = Vec::new();
-    for (i, part) in path.split("::").enumerate() {
-        if i > 0 {
-            out.push(TokenTree::Punct(Punct::new(':', Spacing::Joint)));
-            out.push(TokenTree::Punct(Punct::new(':', Spacing::Joint)));
-        }
-        out.push(TokenTree::Ident(Ident::new(part, Span::call_site())));
-    }
-    out
-}
-
-/// Contains all derive aliases
-static ALIASES: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
-
-/// Retrieve the map that contains derive aliases
-fn get_aliases() -> &'static HashMap<String, Vec<String>> {
-    ALIASES.get_or_init(|| {
-        #[cfg(not(feature = "workspace"))]
-        let Ok(dir) = std::env::var("CARGO_WORKSPACE_DIR") else {panic!(concat!(
+/// Map from `Alias => Vec<Derive>`, where `Alias` expands to a bunch of derive macros (represented as plain strings).
+///
+/// We don't store the `TokenTree`s directly because they are `!Sync`
+// TODO: Replace panics here with `compile_error!()` generations
+static DERIVE_ALIASES: LazyLock<HashMap<String, Vec<String>>> = LazyLock::new(|| {
+    #[cfg(feature = "workspace")]
+    let Ok(dir) = std::env::var("CARGO_WORKSPACE_DIR") else {
+        panic!(concat!(
             "\n\n`CARGO_WORKSPACE_DIR` environment variable must be set, which points to the directory containing the\n",
             "workspace `Cargo.toml`. Since cargo currently doesn't set this variable, in your workspace create `.cargo/config.toml` with contents:\n",
             "\n",
             "[env]\n",
             "CARGO_WORKSPACE_DIR = {{ value = \"\", relative = true }}\n",
-        ))};
-        #[cfg(feature = "workspace")]
-        let Ok(dir) = std::env::var("CARGO_MANIFEST_DIR") else {
-            panic!("env variable `CARGO_MANIFEST_DIR` must be set, which points to the directory containing your crate's `Cargo.toml`. Cargo supplies this env variable by default")
-        };
+        ))
+    };
+    #[cfg(not(feature = "workspace"))]
+    let Ok(dir) = std::env::var("CARGO_MANIFEST_DIR") else {
+        panic!("env variable `CARGO_MANIFEST_DIR` must be set, which points to the directory containing your crate's `Cargo.toml`. Cargo supplies this env variable by default")
+    };
 
-        let path = std::path::Path::new(&dir).join("derive_aliases.rs");
+    let path = std::path::Path::new(&dir).join("derive_aliases.rs");
 
-        let content = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|err| {
             panic!(
                 "expected {} to exist and contain derive aliases. error: {err}.\nhere's an example of syntax in `derive_aliases.rs` file:\n\n{EXAMPLE_DERIVE_ALIASES_RS}\n",
                 path.display()
             )
         });
 
-        parse_my_little_rust(&content)
-    })
-}
+    // This is a map from alias to derive or alias
+    //
+    // It is recursive
+    let alias_map = parse_my_little_rust(&content);
+
+    // Let's resolve the map so each alias maps exactly to a list of derives
+
+    /// Given an alias, recursively expands it into a list of derives
+    fn resolve_derives(
+        alias: &str,
+        alias_map: &HashMap<String, Vec<String>>,
+        current: &mut Vec<String>,
+    ) {
+        let Some(list_of_aliased) = alias_map.get(alias) else {
+            panic!("failed to parse aliases file: Alias `{alias}` does not exist");
+        };
+
+        for aliased in list_of_aliased {
+            if let Some(alias) = aliased.strip_prefix("..") {
+                resolve_derives(alias, alias_map, current);
+            } else {
+                current.push(aliased.clone());
+            }
+        }
+    }
+
+    let mut aliases_to_derives = HashMap::new();
+
+    for alias in alias_map.keys() {
+        let mut derives = vec![];
+        resolve_derives(alias, &alias_map, &mut derives);
+
+        aliases_to_derives.insert(alias.to_string(), derives);
+    }
+
+    aliases_to_derives
+});
 
 const EXAMPLE_DERIVE_ALIASES_RS: &str = "\
 // Simple derive aliases
@@ -335,6 +476,8 @@ fn parse_my_little_rust(s: &str) -> HashMap<String, Vec<String>> {
 
     aliases
 }
+
+static ALIASES_OUTPUTTED: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(test)]
 mod tests {
