@@ -61,7 +61,7 @@ Eq = PartialEq, Eq;
 Ord = PartialOrd, Ord, ..Eq;
 ```
 
-Hovering over `..Ord` will show what it expands to:
+Hovering over `..Ord` will show that it expands to `PartialOrd, Ord, PartialEq, Eq`:
 
 ![hovering shows docs](https://github.com/nik-rev/derive-aliases/blob/main/docs.png?raw=true)
 
