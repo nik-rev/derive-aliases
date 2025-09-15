@@ -54,6 +54,15 @@ struct HelloWorld;
 
 # Documentation on hover
 
+With `Ord` alias defines as follows:
+
+```rs
+Eq = PartialEq, Eq;
+Ord = PartialOrd, Ord, ..Eq;
+```
+
+Hovering over `..Ord` will show what it expands to:
+
 ![hovering shows docs](https://github.com/nik-rev/derive-aliases/blob/main/docs.png?raw=true)
 
 # Single `derive_aliases.rs` in Cargo Workspaces
