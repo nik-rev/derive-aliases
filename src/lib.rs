@@ -81,10 +81,7 @@ use std::{
 /// See the [crate-level](crate) documentation for more info
 #[proc_macro_attribute]
 pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
-    expand_aliases(attr)
-        .into_iter()
-        .chain(item)
-        .collect::<TokenStream>()
+    expand_aliases(attr).into_iter().chain(item).collect()
 }
 
 /// Generates `#[doc = $doc]`
@@ -126,7 +123,17 @@ fn compile_error(ts: &mut TokenStream, span: Span, msg: impl AsRef<str>) {
 
 /// Expand derive aliases recursively and deduplicate
 fn expand_aliases(input: TokenStream) -> TokenStream {
-    let mut seen = HashSet::new();
+    // Derives that were written by the user. If any of them overlap with the derives coming from
+    // alias expansion, we'll create an error alerting the user that the derive can be removed.
+    let mut seen_provided = HashSet::new();
+
+    // Derives that come from expansion of aliases which were already seen
+    //
+    // We'll just ignore them. We allow using several derive aliases that expand to the same derives,
+    // by removing all duplicates
+    //
+    // This stores a map of `Derive => Alias that created it`
+    let mut seen_expanded = HashMap::new();
 
     // Stuff we receive as derive input, aka everything inside of `#[derive(<--here-->)]`
     let mut input = input.into_iter().peekable();
@@ -134,12 +141,95 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
     // The stuff our proc macro outputs
     let mut output = TokenStream::new();
 
+    // When it doesn't make sense to create compiler errors regularly
+    let mut extra_compile_errors = TokenStream::new();
+
     // This is the `struct` that contains documentation about all
     let mut documented_items = Vec::new();
 
     while let Some(tt) = input.next() {
         let TokenTree::Punct(ref p) = tt else {
-            output.extend([tt]);
+            output.extend([tt.clone()]);
+
+            // This is the path we'll be building up
+            let mut path = if let TokenTree::Ident(ref ident) = tt {
+                ident.to_string()
+            } else if let TokenTree::Punct(ref punct) = tt {
+                if punct.as_char() == ':'
+                    && input
+                        .next_if(|tt| {
+                            if let TokenTree::Punct(punct) = tt {
+                                punct.as_char() == ':'
+                            } else {
+                                false
+                            }
+                        })
+                        .is_some()
+                {
+                    // This path is starting with "::". We'll remove this token.
+                    // For purposes of duplication, we ignore if a path starts with "::" as it'll be really, really unlikely for
+                    // that to be important - and it lets us flag much more cases than we could have otherwise
+                    //
+                    // When we push into `documented_items`, we also strip the prefix "::"
+                    String::new()
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
+
+            // Now let's build up a path like `foo::bar::whatever`
+
+            loop {
+                match input.next() {
+                    Some(TokenTree::Punct(punct))
+                        if punct.as_char() == ':'
+                            && input
+                                .next_if(|tt| {
+                                    if let TokenTree::Punct(punct) = tt {
+                                        punct.as_char() == ':'
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .is_some() =>
+                    {
+                        output.extend([TokenTree::Punct(punct.clone()), TokenTree::Punct(punct)]);
+                        path.push_str("::");
+                    }
+                    Some(TokenTree::Ident(ident)) => {
+                        output.extend([TokenTree::Ident(ident.clone())]);
+                        path.push_str(&ident.to_string());
+                    }
+                    // We've finished with the path.
+                    //
+                    // Most likely this is a comma, meaning start of the next derive
+                    Some(tt) => {
+                        output.extend([tt]);
+                        break;
+                    }
+                    // Finished with derive, no more derive arguments
+                    None => break,
+                }
+            }
+
+            // now `path` will be the full identifier and we can compare it
+
+            // Assume this is a derive like `std::hash::Hash`, `Copy` etc. it is hand-written and
+            // did NOT come from an expansion.
+            seen_provided.insert(path.to_string());
+
+            // We've already seen this derive, as it came from Alias expansion.
+            // Alert the user that they can remove it.
+            if let Some(alias) = seen_expanded.get(&path.as_str()) {
+                compile_error(
+                    &mut extra_compile_errors,
+                    tt.span(),
+                    format!("derive `{path}` is already implied by alias `..{alias}`. you can remove it"),
+                );
+            }
+
             continue;
         };
 
@@ -225,13 +315,7 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
 
         add_doc(
             &mut alias_documentation,
-            format!(
-                concat!(
-                    "Derive alias `{}` (crate: `derive_aliases`)",
-                    ", it expands to the following derives:\n"
-                ),
-                alias_string
-            ),
+            format!("Derive alias `..{alias_string}` expands to the following derives:\n"),
         );
 
         // Generate a single line of Documentation `#[doc = ...]" for each Derive that this Alias expands to, recursively
@@ -241,11 +325,18 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
         for derive in list_of_aliased {
             // This is not an alias, it is a concrete derive
 
+            let contains = seen_expanded.contains_key(derive.as_str());
+            // if it's starting with a "::" remove it, since a `::foo::Bar` is considered to be the same as `foo::Bar` for
+            // the purposes of duplication
+            seen_expanded.insert(
+                derive.strip_prefix("::").unwrap_or(derive),
+                alias_string.clone(),
+            );
+
             // 1. If this derive has already been generated by an alias, ignore it
-            if seen.contains(derive) {
+            if contains {
                 continue;
             }
-            seen.insert(derive);
 
             // 2. Add a single line of documentation
             add_doc(&mut alias_documentation, format!("- [`{derive}`]"));
@@ -275,6 +366,16 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
                 is_first_derive = false;
             }
         }
+
+        #[cfg(not(feature = "workspace"))]
+        let whos = "crate's";
+        #[cfg(feature = "workspace")]
+        let whos = "workspace's";
+
+        add_doc(
+            &mut alias_documentation,
+            format!("\nDerive aliases are defined in file `derive_aliases.rs` next to the {whos} `Cargo.toml`"),
+        );
 
         // This is the `struct` who's entire purpose is just to document what this alias expands to
         alias_documentation.extend([
@@ -318,15 +419,12 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
         )),
     ]);
 
-    let a = documented_items
+    documented_items
         .into_iter()
         .flatten()
         .chain(output)
-        .collect::<TokenStream>();
-
-    // panic!("{a}");
-
-    a
+        .chain(extra_compile_errors)
+        .collect()
 }
 
 /// Map from `Alias => Vec<Derive>`, where `Alias` expands to a bunch of derive macros (represented as plain strings).
