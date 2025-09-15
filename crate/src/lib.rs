@@ -45,6 +45,19 @@
 //! CARGO_WORKSPACE_DIR = { value = "", relative = true }
 //! ```
 //!
+//! # Documentation on hover
+//!
+//! With `Ord` alias defines as follows:
+//!
+//! ```rust
+//! Eq = PartialEq, Eq;
+//! Ord = PartialOrd, Ord, ..Eq;
+//! ```
+//!
+//! Hovering over `..Ord` will show what it expands to:
+//!
+//! ![hovering shows docs](https://github.com/nik-rev/derive-aliases/blob/main/docs.png?raw=true)
+//!
 //! # `use` other alias files in `derive_aliases.rs`
 //!
 //! `use` followed by a path will inline the derive aliases located in that file.
