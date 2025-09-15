@@ -30,7 +30,7 @@ implements_traits!(c #[derive(..Eq, std::hash::Hash, ..Copy)] => Eq, PartialEq, 
 // Removes duplicates
 //
 // Here, there will be 2 of `Hash` and 2 of `PartialOrd`
-implements_traits!(d #[derive(Eq, PartialEq, ..Ord, std::hash::Hash, ..Together)] => Ord, PartialOrd, Eq, PartialEq, std::hash::Hash);
+implements_traits!(d #[derive(..Ord, ..Together)] => Ord, PartialOrd, Eq, PartialEq, std::hash::Hash);
 
 // Works with full path reference
 implements_traits!(e #[derive_aliases::derive(..Eq)] => Eq, PartialEq);
