@@ -1,6 +1,4 @@
-#![allow(warnings)]
 #![cfg(test)]
-
 #[macro_use]
 extern crate derive_aliases;
 
@@ -12,6 +10,7 @@ macro_rules! implements_traits {
         }
 
         // HACK: since we can't use `+` as repetition separator
+        #[allow(warnings, reason = "only for type check")]
         fn $name<A: $($($segment)::* +)* Sized>() {
             $name::<$name::A>();
         }

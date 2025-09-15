@@ -5,5 +5,5 @@ publish = false
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-derive_aliases = { path = "../derive_aliases" }
+[dev-dependencies]
+derive_aliases = { path = "../crate" }
