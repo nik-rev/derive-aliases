@@ -14,8 +14,6 @@ This crate provides `#[derive]` aliases for reducing code boilerplate.
 - Very fast compile times, we don't pull *any* dependencies as our parsing logic is very simple
 - Hovering on the aliases shows you documentation on what they expand into
 
-  [hovering shows docs](docs.png)
-
 # Usage
 
 Aliases are defined in a special file `derive_aliases.rs`, located next to your **crate**'s `Cargo.toml`:
@@ -53,6 +51,10 @@ This expands to:
 #[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq, std::hash::Hash)]
 struct HelloWorld;
 ```
+
+# Documentation on hover
+
+![hovering shows docs](https://github.com/nik-rev/derive-aliases/blob/main/docs.png?raw=true)
 
 # Single `derive_aliases.rs` in Cargo Workspaces
 
