@@ -4,7 +4,7 @@
 //!
 //! Aliases are defined in a special file `derive_aliases.rs`, located next to your **crate**'s `Cargo.toml`:
 //!
-//! ```rs,ignore
+//! ```rust
 //! // Simple derive aliases
 //! //
 //! // `#[derive(..Copy, ..Eq)]` expands to `#[std::derive(Copy, Clone, PartialEq, Eq)]`
@@ -22,7 +22,7 @@
 //! This file uses a tiny domain-specific language for defining the derive aliases (the parser is less than 20 lines of code!). `.rs` is used just for syntax highlighting.
 //! These aliases can then be used in Rust like so:
 //!
-//! ```rs,ignore
+//! ```rust
 //! // This globally overrides `std::derive` with `derive_aliases::derive` across the whole crate! Handy.
 //! #[macro_use]
 //! extern crate derive_aliases;
@@ -33,7 +33,7 @@
 //!
 //! This expands to:
 //!
-//! ```rs
+//! ```rust
 //! #[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq, std::hash::Hash)]
 //! struct HelloWorld;
 //! ```
@@ -53,13 +53,13 @@
 //!
 //! If `../my_other_aliases.rs` contains:
 //!
-//! ```rs
+//! ```rust
 //! Ord = PartialOrd, Ord, ..Eq;
 //! ```
 //!
 //! And your `derive_aliases.rs` has:
 //!
-//! ```rs
+//! ```rust
 //! use "../my_other_aliases.rs";
 //!
 //! Eq = PartialEq, Eq;
@@ -67,7 +67,7 @@
 //!
 //! Then it will inline the aliases in the other file, expanding to:
 //!
-//! ```rs
+//! ```rust
 //! Ord = PartialOrd, Ord, ..Eq;
 //! Eq = PartialEq, Eq;
 //! ```
