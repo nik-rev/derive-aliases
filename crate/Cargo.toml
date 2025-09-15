@@ -1,8 +1,9 @@
 [package]
 name = "derive_aliases"
 description = "`#[derive]` aliases for reducing code boilerplate"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
+rust-version = "1.80"
 authors = ["Nik Revenco <pm@nikrev.com>"]
 repository = "https://github.com/nik-rev/derive-aliases"
 license = "MIT OR Apache-2.0"
