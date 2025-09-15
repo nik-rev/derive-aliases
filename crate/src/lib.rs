@@ -140,6 +140,8 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
     // This is the `struct` that contains documentation about all
     let mut documented_items = Vec::new();
 
+    let mut compile_errors = TokenStream::new();
+
     while let Some(tt) = input.next() {
         let TokenTree::Punct(ref p) = tt else {
             output.extend([tt]);
@@ -159,7 +161,7 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
             }
         }) else {
             compile_error(
-                &mut output,
+                &mut compile_errors,
                 p.span(),
                 "after `.` we expect `.` followed by a derive alias, for example: `..Alias`",
             );
@@ -171,7 +173,7 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
         // consume the identifier
         let Some(TokenTree::Ident(alias)) = input.next() else {
             compile_error(
-                &mut output,
+                &mut compile_errors,
                 next.span(),
                 "after `..` we expect a derive alias, for example: `..Alias`",
             );
@@ -182,25 +184,29 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
 
         // All aliased that this alias aliases (lol)
         let Some(list_of_aliased) = DERIVE_ALIASES.get(&alias_string) else {
-            let available = DERIVE_ALIASES
-                .keys()
-                .enumerate()
-                .flat_map(|(i, key)| {
-                    // intersperse
-                    if i == 0 {
-                        vec![key.as_str()]
-                    } else {
-                        vec![", ", key.as_str()]
-                    }
+            let available = format_list(DERIVE_ALIASES.keys());
+
+            let most_similar = most_similar_alias(&alias_string)
+                .map(|similar| {
+                    format!(
+                        "did you mean: `{similar}`? it expands to: {}\n\n",
+                        format_list(
+                            DERIVE_ALIASES
+                                .get(similar)
+                                .expect("it is an existing alias")
+                        )
+                    )
                 })
-                .collect::<String>();
+                .unwrap_or_default();
+
             compile_error(
-                &mut output,
+                &mut compile_errors,
                 alias.span(),
                 format!(
-                    "the alias {alias_string} is not defined.\n\navailable aliases: {available}",
+                    "The alias `{alias_string}` is undefined.\n\n{most_similar}All available aliases: {available}",
                 ),
             );
+
             continue;
         };
 
@@ -348,7 +354,38 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
         .into_iter()
         .flatten()
         .chain(output)
+        .chain(compile_errors)
         .collect()
+}
+
+/// Intersperse list with commas and show it as a string
+fn format_list<'a>(list: impl IntoIterator<Item = &'a String>) -> String {
+    list.into_iter()
+        .enumerate()
+        .flat_map(|(i, key)| {
+            // intersperse
+            if i == 0 {
+                vec![key.as_str()]
+            } else {
+                vec![", ", key.as_str()]
+            }
+        })
+        .collect::<String>()
+}
+
+/// Used in error messages to make good suggestions
+fn most_similar_alias(alias: impl AsRef<str>) -> Option<&'static String> {
+    DERIVE_ALIASES
+        .keys()
+        .map(|it| {
+            (
+                it,
+                strsim::normalized_damerau_levenshtein(it, alias.as_ref()),
+            )
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .filter(|it| it.1 >= 0.70)
+        .map(|it| it.0)
 }
 
 /// Map from `Alias => Vec<Derive>`, where `Alias` expands to a bunch of derive macros (represented as plain strings).

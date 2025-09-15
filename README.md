@@ -14,6 +14,8 @@ This crate provides `#[derive]` aliases for reducing code boilerplate.
 - Very fast compile times, we don't pull *any* dependencies as our parsing logic is very simple
 - Hovering on the aliases shows you documentation on what they expand into
 
+  [hovering shows docs](docs.png)
+
 # Usage
 
 Aliases are defined in a special file `derive_aliases.rs`, located next to your **crate**'s `Cargo.toml`:
