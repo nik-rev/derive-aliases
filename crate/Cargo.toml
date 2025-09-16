@@ -17,6 +17,3 @@ proc-macro = true
 # note: this is only called if we'd get compiler errors anyway (for better error messages), so I
 # still consider us to pull 0 dependencies
 strsim = "0.11"
-
-[features]
-workspace = []

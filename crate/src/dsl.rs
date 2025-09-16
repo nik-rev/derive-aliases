@@ -25,6 +25,7 @@
 //! Dsl := [ Stmt ';' ] *
 //! ```
 
+use std::hash::Hash;
 use std::mem;
 use std::path::Path;
 use std::str::Chars;
@@ -45,7 +46,7 @@ Eq = PartialEq, Eq;
 
 Ord = PartialOrd, Ord, ..Eq;";
 
-mod token {
+pub mod token {
     use super::Span;
 
     /// `"cfg"`
@@ -87,13 +88,27 @@ pub struct Span {
 }
 
 /// An identifier
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Ident {
     /// Name of this identifier
     pub name: String,
     /// Span of the identifier
     pub span: Span,
 }
+
+impl Hash for Ident {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
+
+impl PartialEq for Ident {
+    fn eq(&self, other: &Self) -> bool {
+        self.name.eq(&other.name)
+    }
+}
+
+impl Eq for Ident {}
 
 /// Path to derive, like `std::hash::Hash`
 #[derive(Debug, Clone)]
@@ -876,13 +891,13 @@ pub fn parse_single_file(source: impl AsRef<str>, file_path: impl AsRef<Path>) -
 }
 
 /// Render a single error, showing span information and location in the source file
-pub fn render_error(error: &ParseError, file: impl AsRef<str>, source: impl AsRef<str>) -> String {
+pub fn render_error(error: &ParseError, file: &str, source: &str) -> String {
     let mut rendered_error = String::new();
-    let source = source.as_ref();
-    let file = file.as_ref();
     let span = &error.span;
-    let start_line = source[..span.location.start].lines().count();
-    let start_col = source[..span.location.start]
+    let start = span.location.start.max(0);
+    let end = span.location.end.max(source.len());
+    let start_line = source[..start].lines().count();
+    let start_col = source[..start]
         .chars()
         .rev()
         .take_while(|c| *c != '\n')
@@ -899,7 +914,7 @@ pub fn render_error(error: &ParseError, file: impl AsRef<str>, source: impl AsRe
         .unwrap_or("");
     rendered_error.push_str(&format!("  {line_content}\n"));
 
-    let indicator_len = source[span.location.start..span.location.end].len();
+    let indicator_len = source[start..end].len();
     let indicator = format!("{: >start_col$}{}", "", "^".repeat(indicator_len.max(1)));
     rendered_error.push_str(&format!("  {indicator}\n"));
 
@@ -919,7 +934,7 @@ mod tests {
                 "{}",
                 file.errors
                     .iter()
-                    .map(|err| render_error(err, file.span.file.to_string_lossy(), source))
+                    .map(|err| render_error(err, &file.span.file.to_string_lossy(), source))
                     .collect::<String>()
             );
         }
