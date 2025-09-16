@@ -67,15 +67,6 @@ Hovering over `..Ord` will show that it expands to `PartialOrd, Ord, PartialEq, 
 
 ![hovering shows docs](https://github.com/nik-rev/derive-aliases/blob/main/docs.png?raw=true)
 
-# Single `derive_aliases.rs` in Cargo Workspaces
-
-If you want to use the same `derive_aliases.rs` for all crates in your Cargo workspace, enable the `workspace` feature then define the `CARGO_WORKSPACE_DIR` env variable in `.cargo/config.toml`:
-
-```toml
-[env]
-CARGO_WORKSPACE_DIR = { value = "", relative = true }
-```
-
 # `use` other alias files in `derive_aliases.rs`
 
 `use` followed by a path will inline the derive aliases located in that file.
