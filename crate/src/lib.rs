@@ -335,6 +335,18 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
                     ALIASES_OUTPUTTED.fetch_add(1, std::sync::atomic::Ordering::Acquire)
                 ),
                 // when user hovers over the alias, they'll actually see docs for what it produces!
+                //
+                // TODO: This span only covers the identifier part:
+                //
+                // ..Alias
+                //   ^^^^^
+                //
+                // What we actually want is a span that also covers the 2 dots:
+                //
+                // ..Alias
+                // ^^^^^^^
+                //
+                // This would be possible with `Span::join`, but it is unstable
                 alias.span(),
             )),
             TokenTree::Punct(Punct::new(';', Spacing::Alone)),
