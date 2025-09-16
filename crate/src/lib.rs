@@ -76,333 +76,269 @@
 //! ```
 
 use alias_map::ALIAS_MAP;
+use codegen::CompileError;
+use dsl::Alias;
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 use std::{
     collections::{HashMap, HashSet},
+    io::Chain,
     iter,
     path::Path,
     sync::{atomic::AtomicUsize, LazyLock},
 };
 
 mod alias_map;
+mod codegen;
 mod dsl;
 
-// /// `#[derive]` that supports derive aliases: `..Alias`
-// ///
-// /// See the [crate-level](crate) documentation for more info
-// #[proc_macro_attribute]
-// pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
-//     expand_aliases(attr).into_iter().chain(item).collect()
-// }
+macro_rules! chain {
+    [] => {
+        std::iter::empty()
+    };
+    [$first:expr $(, $rest:expr)* $(,)?] => {{
+        let iter = std::iter::IntoIterator::into_iter($first);
+        $(
+            let iter = std::iter::Iterator::chain(iter, std::iter::IntoIterator::into_iter($rest));
+        )*
+        iter
+    }};
+}
+pub(crate) use chain;
 
-// /// Expand derive aliases recursively and deduplicate
-// fn expand_aliases(input: TokenStream) -> TokenStream {
-//     // Derives that come from expansion of aliases which were already seen
-//     //
-//     // We'll just ignore them. We allow using several derive aliases that expand to the same derives,
-//     // by removing all duplicates
-//     let mut seen_expanded = HashSet::new();
+/// A `#[derive]` that supports derive aliases
+///
+/// For example, the following code, which uses `#[derive_aliases::derive]` instead of `#[std::derive]`:
+///
+/// ```ignore
+/// use derive_aliases::derive;
+///
+/// #[derive(..Ord)]
+/// ```
+///
+/// Will expand to this:
+///
+/// ```ignore
+/// use derive_aliases::derive;
+///
+/// #[std::derive(Ord, PartialOrd, Eq, PartialEq)]
+/// ```
+///
+/// If `derive_aliases.rs` contains the following:
+///
+/// ```ignore
+/// // Defines alias `..Eq` that expands to `PartialEq, Eq`
+/// Eq = PartialEq, Eq;
+/// // Defines alias `..ord` that expands to `PartialOrd, Ord, PartialEq, Eq`
+/// Ord = PartialOrd, Ord, ..Eq;
+/// ```
+///
+/// Derive aliases are defined in file `derive_aliases.rs` next to the crate's `Cargo.toml`
+///
+/// For more info, see the [crate-level](crate) documentation
+#[proc_macro_attribute]
+pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
+    expand_aliases(attr).into_iter().chain(item).collect()
+}
 
-//     // Stuff we receive inside our attribute macro's input, aka everything inside of `#[derive(<--here-->)]`
-//     let mut input = input.into_iter().peekable();
+/// Expand a list of derives and derive aliases into a list of derives
+///
+/// At a high-level, the `derive_aliases::derive` proc macro attribute:
+///
+/// - Takes a list of aliases (e.g. `..MyAlias`) and normal derives (e.g. `std::hash::Hash`)
+/// - All aliases are expanded into a list of real Rust derives. These derives are then directly
+///   passed to `std::derive`
+///
+/// # Exact algorithm
+///
+/// We do 99.9% of the work **once** per the entire compilation session, as all aliases are stored in a `static`.
+///
+/// The exact algorithm is the following:
+///
+/// 1. The `derive_aliases.rs` file is [parsed](alias_map::parse) into a map of `Alias => Vec<AliasDeclaration>`
+///
+///    - Each `Alias` is just a `String` which can be referenced as `..Alias`
+///    - Each `AliasDeclaration` creates an `Alias`, which references a list of (`Alias` or `Derive`).
+///
+///    The map is self-referential, at this stage
+///
+/// 2. We flatten this map into a map of `Alias => Vec<Derive>`, resolving any aliases recursively.
+///
+///    Each `Derive` is then just a path to the real `#[proc_macro_derive(..)]` contained in Rust, and it will be passed
+///    directly to `std::derive`
+///
+///    The `#[cfg]` predicates we encounter along the way are cumulated together, so each `Derive` contains a `Vec<Cfg>`
+///    These predicates are passed to `#[cfg_attr(..)]` and Rust must evaluate them to `true` for them to be invoked
+///
+/// 3. If we emitted code with the current data, we would generate a `#[std::derive]` for every single derive alias, which would be inefficient.
+///    We want our proc macro to be as fast
+///
+///    We therefore resolve this map yet again into a map of `Alias => { Vec<Cfg> => Vec<Derive> }`, where `Derive`s that have the
+///    same `Vec<Cfg>` are placed together, and we will emit just a single `#[cfg_attr]` for each entry in the map.
+///
+/// 4. We're now done with 99.9% of the work, and we store the result in [`ALIAS_MAP`].
+///
+///    From here on, every invocation of `derive` will skip all of those steps and directly read from the `ALIAS_MAP` in order to convert
+///    it's list of aliases and derives into a list of derives, which are all passed to `#[std::derive]`,
+///
+/// 5. When we receive an alias `..Alias`, we get a map of `Vec<Cfg> => Vec<Derive>` from `ALIAS_MAP` and iterate over
+///    the entries, generating a single `#[std::derive]` (or `#[cfg_attr(.., std::derive(..))]` if there is at least 1 `Cfg` predicate)
+///    for each entry.
+///
+/// # Notes
+///
+/// - If aliases expands to a derive that was already the result of an alias expansion, then it is ignored. This allows us to define aliases
+///   that have overlapping derives and then use them together
+///
+/// - When we encounter any errors, we collect them into a bunch of `compile_error!(..)` invocations then report them all at once
+fn expand_aliases(input: TokenStream) -> TokenStream {
+    // Derives that come from expansion of aliases which were already seen
+    //
+    // We'll just ignore them. We allow using several derive aliases that expand to the same derives,
+    // by removing all duplicates
+    let mut seen_expanded = HashSet::new();
 
-//     // This is what will get passed to `#[std::derive(...)]`
-//     let mut std_derive_input = TokenStream::new();
+    // Stuff we receive inside our attribute macro's input, aka everything inside of `#[derive(<--here-->)]`
+    let mut input = input.into_iter().peekable();
 
-//     // These are the temporary unit `struct`s that contains documentation about each `..Alias`
-//     //
-//     // The `span` of each `struct` is set to the `..Alias`, so hovering over the `..Alias` shows you
-//     // documentation about what it expands to
-//     let mut documentation_for_all_aliases = Vec::new();
+    // These are all of the `#[std::derive(..)]` and `#[cfg_attr(.., std::derive(..))]` attributes
+    // that we will generate.
+    let mut attrs = TokenStream::new();
 
-//     // We collect all errors in a single stream so we can report them all at once,
-//     // and rust-analyzer allows to continue us to work with other derives - even though we may have syntax errors somewhere
-//     let mut compile_errors = TokenStream::new();
+    // These are the temporary unit `struct`s that contains documentation about each `..Alias`
+    //
+    // The `span` of each `struct` is set to the `..Alias`, so hovering over the `..Alias` shows you
+    // documentation about what it expands to
+    let mut documentation_for_all_aliases = Vec::new();
 
-//     while let Some(tt) = input.next() {
-//         // We manually have to handle all `..Alias`es, but regular derives will be passed to `std::derive` verbatim
-//         let TokenTree::Punct(ref dot) = tt else {
-//             std_derive_input.extend([tt]);
-//             continue;
-//         };
+    // We collect all errors in a single stream so we can report them all at once,
+    // and rust-analyzer allows to continue us to work with other derives - even though we may have syntax errors somewhere
+    let mut compile_errors = TokenStream::new();
 
-//         if dot.as_char() != '.' {
-//             std_derive_input.extend([tt]);
-//             continue;
-//         }
+    let (alias_map, errors) = &*ALIAS_MAP;
 
-//         let Some(dot_dot) = input.next_if(|tt| {
-//             if let TokenTree::Punct(dot) = tt {
-//                 dot.as_char() == '.'
-//             } else {
-//                 false
-//             }
-//         }) else {
-//             compile_errors.extend(CompileError::new(
-//                 dot.span(),
-//                 "after `.` we expect `.` followed by a derive alias, for example: `..Alias`",
-//             ));
-//             continue;
-//         };
+    // Report all parse errors as compile errors
+    compile_errors.extend(
+        errors
+            .iter()
+            .flat_map(|err| CompileError::new(Span::mixed_site(), err)),
+    );
 
-//         // At this point, we have a `..` so we can absolutely certain that it is an alias
+    while let Some(tt) = input.next() {
+        // We manually have to handle all `..Alias`es, but regular derives will be passed to `std::derive` verbatim
+        let TokenTree::Punct(ref dot) = tt else {
+            attrs.extend([tt]);
+            continue;
+        };
 
-//         // consume the identifier `Alias`
-//         let Some(TokenTree::Ident(alias)) = input.next() else {
-//             compile_errors.extend(CompileError::new(
-//                 dot_dot.span(),
-//                 "after `..` we expect a derive alias, for example: `..Alias`",
-//             ));
-//             continue;
-//         };
+        if dot.as_char() != '.' {
+            attrs.extend([tt]);
+            continue;
+        }
 
-//         // Parsed `..Alias`.
+        let Some(dot_dot) = input.next_if(|tt| {
+            if let TokenTree::Punct(dot) = tt {
+                dot.as_char() == '.'
+            } else {
+                false
+            }
+        }) else {
+            compile_errors.extend(CompileError::new(
+                dot.span(),
+                "after `.` we expect `.` followed by a derive alias, for example: `..Alias`",
+            ));
+            continue;
+        };
 
-//         let alias_string = alias.to_string();
+        // At this point, we have a `..` so we can absolutely certain that it is an alias
 
-//         // All derives that this alias references, fully resolved.
-//         let Some(derives) = ALIAS_MAP.get(&alias_string) else {
-//             let available = format_list(ALIAS_MAP.keys());
+        // consume the identifier `Alias`
+        let Some(TokenTree::Ident(alias)) = input.next() else {
+            compile_errors.extend(CompileError::new(
+                dot_dot.span(),
+                "after `..` we expect a derive alias, for example: `..Alias`",
+            ));
+            continue;
+        };
 
-//             let most_similar = most_similar_alias(&alias_string)
-//                 .map(|similar| {
-//                     format!(
-//                         "did you mean: `{similar}`? it expands to: {}\n\n",
-//                         format_list(ALIAS_MAP.get(similar).expect(
-//                             "it is an existing alias, we got it by iterating over the alias names"
-//                         ))
-//                     )
-//                 })
-//                 .unwrap_or_default();
+        // Parsed `..Alias`.
 
-//             compile_errors.extend(CompileError::new(
-//                 alias.span(),
-//                 format!(
-//                     "The alias `{alias_string}` is undefined.\n\n{most_similar}All available aliases: {available}",
-//                 ),
-//             ));
+        let alias_string = Alias::new(alias.to_string());
 
-//             continue;
-//         };
+        // All derives that this alias references, fully resolved.
+        let Some(derives) = alias_map.get(&alias_string) else {
+            let all_aliases = format_list(alias_map.keys().map(|key| &key.0.name));
 
-//         // A single `struct` that holds documentation for the current alias
-//         let mut alias_documentation = TokenStream::new();
+            let most_similar_alias = most_similar_alias(&alias_string.0.name)
+                .map(|similar| {
+                    format!(
+                        "did you mean: `{similar}`?",
+                        // "did you mean: `{similar}`? it expands to: {}\n\n",
+                        // format_list(alias_map.get(&Alias::new(similar)).expect(
+                        //     "it is an existing alias, we got it by iterating over the alias names"
+                        // ))
+                    )
+                })
+                .unwrap_or_default();
 
-//         alias_documentation.extend(attr_with_inner("doc", "hidden"));
-//         alias_documentation.extend(attr_with_inner("allow", "non_camel_case_types"));
+            compile_errors.extend(CompileError::new(
+                alias.span(),
+                format!(
+                    "The alias `{alias_string}` is undefined.\n\n{most_similar_alias}All available aliases: {all_aliases}",
+                ),
+            ));
 
-//         alias_documentation.extend(doc_comment(format!(
-//             "Derive alias `..{alias_string}` expands to the following derives:\n"
-//         )));
+            continue;
+        };
 
-//         // Generate a single line of Documentation `#[doc = ...]" for each Derive that this Alias expands to,
-//         // Also push all of those derives into the final token stream passed to `#[std::derive]`
+        // A single `struct` that holds documentation for the current alias
+        let mut alias_documentation = TokenStream::new();
 
-//         // If this is the first derive that this alias expands to
-//         //
-//         // derive(std::marker::Copy, std::hash::Hash, Copy)
-//         //        ^^^^^^^^^^^^^^^^^ true
-//         //                           ^^^^^^^^^^^^^^^ false
-//         //                                            ^^^^ false
-//         let mut is_first_derive = true;
+        alias_documentation.extend(codegen::attr_with_inner("doc", "hidden"));
+        alias_documentation.extend(codegen::attr_with_inner("allow", "non_camel_case_types"));
 
-//         for derive in derives {
-//             let is_duplicate_derive = seen_expanded.contains(derive);
+        alias_documentation.extend(codegen::doc_comment(&format!(
+            "Derive alias `..{alias_string}` expands to the following derives:\n"
+        )));
 
-//             seen_expanded.insert(derive);
+        // Generate a single line of Documentation `#[doc = ...]" for each Derive that this Alias expands to,
+        // Also push all of those derives into the final token stream passed to `#[std::derive]`
 
-//             // 1. If this derive has already been generated by an alias, ignore it
-//             if is_duplicate_derive {
-//                 continue;
-//             }
+        for (cfg, derives) in derives {
+            // This is a list of `#[std::derive(..)]` attributes. Each one may, or may not be inside of `#[cfg_attr(.., std::derive(..))]`
+            attrs.extend(codegen::cfg_std_derive_attr(
+                cfg,
+                derives,
+                &mut alias_documentation,
+                &mut seen_expanded,
+            ));
+        }
 
-//             // 2. Add a single bullet point of documentation for this alias
-//             alias_documentation.extend(doc_comment(format!("- [`{derive}`]")));
+        // This is the `struct` who's entire purpose is just to document what this alias expands to
+        alias_documentation.extend([
+            TokenTree::Ident(Ident::new("struct", Span::call_site())),
+            TokenTree::Ident(Ident::new(
+                &format!(
+                    "{alias_string}__derive__alias__{}",
+                    // when we use the same alias multiple times in the same module,
+                    // we don't want names of the generated documentation items to clash
+                    ALIASES_OUTPUTTED.fetch_add(1, std::sync::atomic::Ordering::Acquire)
+                ),
+                // when user hovers over the alias, they'll actually see docs for what it produces!
+                alias.span(),
+            )),
+            TokenTree::Punct(Punct::new(';', Spacing::Alone)),
+        ]);
 
-//             // manually handle it, since `.split()` ignores it
-//             let has_leading_path_separator = derive.starts_with("::");
+        documentation_for_all_aliases.push(alias_documentation);
+    }
 
-//             // 3. Add the actual derive into the `#[std::derive(...)]` token stream
-//             for (i, part) in derive.split("::").enumerate() {
-//                 // if this is NOT the first derive, AND it is the first segment, add a leading comma
-//                 //
-//                 // so e.g
-//                 //
-//                 // `derive(std::marker::Copy, std::hash::Hash)` will only insert a comma in the beginning
-//                 //                          ^ this comma
-//                 //
-//                 // The outer loop that would iterate over the `std::marker::Copy` and `std::hash::Hash`
-//                 // The inner loop (THIS one) would iterate over [`std`, `marker`, `copy`] and the 2nd iteration [`std`, `hash`, `Hash`]
-//                 let prepend_leading_comma = !is_first_derive && i == 0;
-
-//                 if prepend_leading_comma {
-//                     std_derive_input.extend([TokenTree::Punct(Punct::new(',', Spacing::Alone))]);
-//                 }
-
-//                 // Add path segment if we are NOT at the beginning
-
-//                 // - A: If we have a leading path separator, we'll always prepend a path separator at every split of `::`
-//                 // - B: If we don't have a leading path separator, we'll prepend a path separator at every split of `::`, SKIPPING the 1st one
-//                 //
-//                 // ::foo::bar -> A
-//                 // foo::bar -> B
-//                 let prepend_path_separator = has_leading_path_separator || (i > 0);
-
-//                 if prepend_path_separator {
-//                     std_derive_input.extend([
-//                         TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-//                         TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-//                     ]);
-//                 }
-
-//                 std_derive_input.extend([TokenTree::Ident(Ident::new(part, Span::call_site()))]);
-//                 is_first_derive = false;
-//             }
-//         }
-
-//         alias_documentation.extend(doc_comment(
-//             format!("\nDerive aliases are defined in file `derive_aliases.rs` next to the crate's `Cargo.toml`"),
-//         ));
-
-//         // This is the `struct` who's entire purpose is just to document what this alias expands to
-//         alias_documentation.extend([
-//             TokenTree::Ident(Ident::new("struct", Span::call_site())),
-//             TokenTree::Ident(Ident::new(
-//                 &format!(
-//                     "{alias_string}__derive__alias__{}",
-//                     // when we use the same alias multiple times in the same module, we don't want names of the generated documentation
-//                     // items to clash
-//                     ALIASES_OUTPUTTED.fetch_add(1, std::sync::atomic::Ordering::Acquire)
-//                 ),
-//                 // when user hovers over the alias, they'll actually see docs for what it produces!
-//                 alias.span(),
-//             )),
-//             TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-//         ]);
-
-//         documentation_for_all_aliases.push(alias_documentation);
-//     }
-
-//     documentation_for_all_aliases
-//         .into_iter()
-//         .flatten()
-//         .chain(std_derive(std_derive_input))
-//         .chain(compile_errors)
-//         .collect()
-// }
-
-// /// Generate `#[doc = $doc]`
-// fn doc_comment(doc: impl AsRef<str>) -> impl Iterator<Item = TokenTree> {
-//     [
-//         TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-//         TokenTree::Group(Group::new(
-//             Delimiter::Bracket,
-//             TokenStream::from_iter([
-//                 TokenTree::Ident(Ident::new("doc", Span::call_site())),
-//                 TokenTree::Punct(Punct::new('=', Spacing::Alone)),
-//                 TokenTree::Literal(Literal::string(doc.as_ref())),
-//             ]),
-//         )),
-//     ]
-//     .into_iter()
-// }
-
-// /// `.into_iter()` generates `compile_error!($message)` at `$span`
-// struct CompileError {
-//     /// Where the compile error is generates
-//     span: Span,
-//     /// Message of the compile error
-//     message: String,
-// }
-
-// impl CompileError {
-//     /// Create a new compile error
-//     fn new(span: Span, message: impl AsRef<str>) -> Self {
-//         Self {
-//             span,
-//             message: message.as_ref().to_string(),
-//         }
-//     }
-// }
-
-// impl IntoIterator for CompileError {
-//     type Item = TokenTree;
-//     type IntoIter = std::array::IntoIter<Self::Item, 3>;
-
-//     fn into_iter(self) -> Self::IntoIter {
-//         [
-//             TokenTree::Ident(Ident::new("compile_error", self.span)),
-//             TokenTree::Punct({
-//                 let mut punct = Punct::new('!', Spacing::Alone);
-//                 punct.set_span(self.span);
-//                 punct
-//             }),
-//             TokenTree::Group({
-//                 let mut group = Group::new(Delimiter::Brace, {
-//                     TokenStream::from_iter(vec![TokenTree::Literal({
-//                         let mut string = Literal::string(&self.message);
-//                         string.set_span(self.span);
-//                         string
-//                     })])
-//                 });
-//                 group.set_span(self.span);
-//                 group
-//             }),
-//         ]
-//         .into_iter()
-//     }
-// }
-
-// /// Generate `#[$attr($ident)]`
-// fn attr_with_inner(
-//     attr: impl AsRef<str>,
-//     ident: impl AsRef<str>,
-// ) -> impl Iterator<Item = TokenTree> {
-//     [
-//         TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-//         TokenTree::Group(Group::new(
-//             Delimiter::Bracket,
-//             TokenStream::from_iter([
-//                 TokenTree::Ident(Ident::new(attr.as_ref(), Span::call_site())),
-//                 TokenTree::Group(Group::new(
-//                     Delimiter::Parenthesis,
-//                     TokenStream::from_iter([TokenTree::Ident(Ident::new(
-//                         ident.as_ref(),
-//                         Span::mixed_site(),
-//                     ))]),
-//                 )),
-//             ]),
-//         )),
-//     ]
-//     .into_iter()
-// }
-
-// /// Generate `#[::std::prelude::v1::derive($derives)]`
-// ///
-// /// Our macro expands aliases then passes it to the standard library `derive`
-// fn std_derive(derives: TokenStream) -> TokenStream {
-//     TokenStream::from_iter([
-//         TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-//         TokenTree::Group(Group::new(
-//             Delimiter::Bracket,
-//             TokenStream::from_iter([
-//                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-//                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-//                 TokenTree::Ident(Ident::new("std", Span::call_site())),
-//                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-//                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-//                 TokenTree::Ident(Ident::new("prelude", Span::call_site())),
-//                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-//                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-//                 TokenTree::Ident(Ident::new("v1", Span::call_site())),
-//                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-//                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-//                 TokenTree::Ident(Ident::new("derive", Span::call_site())),
-//                 TokenTree::Group(Group::new(Delimiter::Parenthesis, derives)),
-//             ]),
-//         )),
-//     ])
-// }
+    documentation_for_all_aliases
+        .into_iter()
+        .flatten()
+        .chain(attrs)
+        .chain(compile_errors)
+        .collect()
+}
 
 /// Intersperse list with commas and show it as a string
 fn format_list<'a>(list: impl IntoIterator<Item = &'a String>) -> String {
@@ -440,4 +376,56 @@ fn most_similar_alias(alias: impl AsRef<str>) -> Option<String> {
         .map(|it| it.0)
 }
 
-// static ALIASES_OUTPUTTED: AtomicUsize = AtomicUsize::new(0);
+/// Hovering on aliases shows documentation for them. This function generates 1 line of such documentation
+///
+/// This is the function that generates documentation
+/// for a **single** derive that comes from the expansion of an alias.
+/// The `cfgs` are the cumulative `cfg` predicates that will be rendered, if non-empty.
+///
+/// ```rs
+/// Eq = PartialEq, #[cfg(bar)] Eq;
+/// Ord = PartialOrd, Ord, #[cfg(foo)] ..Eq;
+/// ```
+///
+/// When expanding `..Ord`, we will generate *something like* the following documentation on a throwaway
+/// `struct` for which we just attach documentation comments:
+///
+/// ```ignore
+/// /// - [`PartialOrd`]
+/// /// - [`Ord`]
+/// /// - [`PartialEq`] when `#[cfg(foo)]`
+/// /// - [`Eq`] when `#[cfg(all(foo, bar))]`
+/// struct throwaway_struct_only_for_documentation_of_alias_1425042150;
+/// ```
+///
+/// Each bullet point corresponds to a single invocation of this function.
+fn single_line_of_doc_comment_for_derive(cfgs: &[dsl::Cfg], derive: &dsl::Derive) -> String {
+    let mut doc_line = format!("- [`{derive}`]");
+
+    if cfgs.len() == 1 {
+        // `#` will also render `#[cfg(...)]` attribute wrapper
+        doc_line.push_str(&format!(" when `{doc_line:#}`"));
+    } else if cfgs.len() > 2 {
+        doc_line.push_str(" when ");
+        doc_line.push_str("`#[cfg(all(");
+        for (i, cfg) in cfgs.iter().enumerate() {
+            // This renders a predicate, e.g. `feature = "serde"`
+            doc_line.push_str(&cfg.to_string());
+
+            let is_last = i + 1 == cfgs.len();
+
+            if !is_last {
+                // Intersperse all CFG predicates with commas, except the last one
+                //
+                // cfg, cfg2, cfg3
+                //    ^^    ^^
+                doc_line.push_str(", ");
+            }
+        }
+        doc_line.push_str("))]`");
+    }
+
+    doc_line
+}
+
+static ALIASES_OUTPUTTED: AtomicUsize = AtomicUsize::new(0);

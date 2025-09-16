@@ -26,6 +26,8 @@
 //! File := [ Stmt ';' ] *
 //! ```
 
+use core::fmt;
+use std::fmt::{Debug, Display, Write};
 use std::hash::Hash;
 use std::mem;
 use std::path::Path;
@@ -47,31 +49,8 @@ Eq = PartialEq, Eq;
 
 Ord = PartialOrd, Ord, ..Eq;";
 
-pub mod token {
-    use super::Span;
-
-    /// `"cfg"`
-    #[derive(Debug, Clone, Eq, Hash, PartialEq)]
-    pub struct Cfg(pub Span);
-    /// `"use"`
-    #[derive(Debug, Clone)]
-    pub struct Use(pub Span);
-    /// `"::"`
-    #[derive(Debug, Clone)]
-    pub struct Colon(pub Span);
-    /// `"="`
-    #[derive(Debug, Clone)]
-    pub struct Eq(pub Span);
-    /// `","`
-    #[derive(Debug, Clone)]
-    pub struct Comma(pub Span);
-    /// `"."`
-    #[derive(Debug, Clone)]
-    pub struct Dot(pub Span);
-}
-
 /// A list of `T`s separated by `Sep`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Separated<T, Sep> {
     /// The first `T` does not have any punctuation
     pub first: T,
@@ -80,7 +59,7 @@ pub struct Separated<T, Sep> {
 }
 
 /// Represents a location for use in error reporting
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Default)]
 pub struct Span {
     /// Byte offset in the source file
     pub location: Range<usize>,
@@ -89,7 +68,7 @@ pub struct Span {
 }
 
 /// An identifier
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Ident {
     /// Name of this identifier
     pub name: String,
@@ -97,22 +76,8 @@ pub struct Ident {
     pub span: Span,
 }
 
-impl Hash for Ident {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-    }
-}
-
-impl PartialEq for Ident {
-    fn eq(&self, other: &Self) -> bool {
-        self.name.eq(&other.name)
-    }
-}
-
-impl Eq for Ident {}
-
 /// Path to derive, like `std::hash::Hash`
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Derive {
     /// Span of the entire derive
     pub span: Span,
@@ -123,11 +88,20 @@ pub struct Derive {
 }
 
 /// An alias, which expands to 1 or more `Aliased`s
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct Alias(pub Ident);
 
+impl Alias {
+    pub fn new(alias: String) -> Self {
+        Alias(Ident {
+            name: alias,
+            span: Span::default(),
+        })
+    }
+}
+
 /// An alias expansion, `..Alias`
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AliasExpansion {
     /// first `.`
     pub dot_1: token::Dot,
@@ -138,7 +112,7 @@ pub struct AliasExpansion {
 }
 
 /// What an alias expands to
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum AliasedItem {
     /// Path to derive, like `std::hash::Hash`
     Derive(Derive),
@@ -147,7 +121,10 @@ pub enum AliasedItem {
 }
 
 /// Configuration predicate, passed verbatim to Rust
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+///
+/// A single derive may have multiple `Cfg` associated with it,
+/// in which case we'll wrap it with the `all()` predicate
+#[derive(Clone)]
 pub struct Cfg {
     /// Span of the entire configuration predicate
     pub span: Span,
@@ -155,18 +132,6 @@ pub struct Cfg {
     pub keyword: token::Cfg,
     /// Content inside `#[cfg(<-- here -->)]`
     pub cfg: String,
-}
-
-impl PartialOrd for Cfg {
-    fn partial_cmp(&self, other: &Cfg) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Cfg {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.cfg.cmp(&other.cfg)
-    }
 }
 
 /// A single aliased item
@@ -182,7 +147,7 @@ pub struct Aliased {
 
 /// Declaration for a new alias
 ///
-/// ```
+/// ```ignore
 /// MyAlias = #[cfg(feature = "foo")] Copy, Clone, ..Eq;
 /// ^^^^^^^ alias
 ///           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ aliased
@@ -923,6 +888,253 @@ pub fn render_error(error: &ParseError, file: Arc<PathBuf>, source: &str) -> Str
     rendered_error
 }
 
+pub mod token {
+    use super::Span;
+    use std::fmt;
+
+    macro_rules! tokens {
+        { $( $Token:ident = $token:literal )* } => {
+            $(
+                #[derive(Clone)]
+                #[doc = concat!("`\"", $token, "\"`")]
+                pub struct $Token(pub super::Span);
+
+                impl PartialEq for $Token {
+                    fn eq(&self, other: &$Token) -> bool {
+                        true
+                    }
+                }
+
+                impl std::hash::Hash for $Token {
+                    fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+                        $token.hash(hasher);
+                    }
+                }
+
+                impl std::cmp::Eq for $Token {}
+
+                impl fmt::Display for $Token {
+                    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        f.write_str($token)
+                    }
+                }
+
+                impl fmt::Debug for $Token {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        f.write_str("\"")?;
+                        f.write_str($token)?;
+                        f.write_str("\"")
+                    }
+                }
+            )*
+        };
+    }
+
+    tokens! {
+        Eq = "="
+        Use = "use"
+        Colon = "::"
+        Comma = ","
+        Dot = "."
+        Cfg = "cfg"
+    }
+}
+
+impl<T: fmt::Display, Sep: fmt::Display> fmt::Display for Separated<T, Sep> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        T::fmt(&self.first, f)?;
+
+        for (sep, t) in &self.items {
+            Sep::fmt(&sep, f)?;
+            T::fmt(&t, f)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl<T: fmt::Display, Sep: fmt::Display> fmt::Debug for Separated<T, Sep> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('"')?;
+        <Self as fmt::Display>::fmt(&self, f)?;
+        f.write_char('"')
+    }
+}
+
+impl Display for Ident {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+impl Debug for Ident {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('"')?;
+        f.write_str(&self.name)?;
+        f.write_char('"')
+    }
+}
+
+impl Hash for Ident {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
+
+impl PartialEq for Ident {
+    fn eq(&self, other: &Self) -> bool {
+        self.name.eq(&other.name)
+    }
+}
+
+impl Eq for Ident {}
+
+impl Hash for Derive {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.leading_colon.is_some().hash(state);
+        self.components.first.hash(state);
+        for (_, component) in &self.components.items {
+            component.hash(state);
+        }
+    }
+}
+
+impl PartialEq for Derive {
+    fn eq(&self, other: &Self) -> bool {
+        self.leading_colon.is_some() == other.leading_colon.is_some()
+            && self.components.first == other.components.first
+            && self
+                .components
+                .items
+                .iter()
+                .map(|(_, ident)| ident)
+                .eq(other.components.items.iter().map(|(_, ident)| ident))
+    }
+}
+
+impl Eq for Derive {}
+
+impl Display for Derive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.leading_colon.is_some() {
+            f.write_str("::");
+        }
+
+        Display::fmt(&self.components, f)?;
+
+        Ok(())
+    }
+}
+
+impl Debug for Derive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <Self as Display>::fmt(&self, f)
+    }
+}
+
+impl Debug for AliasExpansion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <Self as Display>::fmt(self, f)
+    }
+}
+
+impl Display for AliasExpansion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('.')?;
+        f.write_char('.')?;
+        <Alias as Display>::fmt(&self.alias, f)
+    }
+}
+
+impl Display for AliasedItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AliasedItem::Derive(derive) => Display::fmt(&derive, f),
+            AliasedItem::AliasExpansion(alias_expansion) => Display::fmt(alias_expansion, f),
+        }
+    }
+}
+
+impl Debug for AliasedItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AliasedItem::Derive(derive) => Debug::fmt(&derive, f),
+            AliasedItem::AliasExpansion(alias_expansion) => Debug::fmt(alias_expansion, f),
+        }
+    }
+}
+
+/// If `{:#}` (alternate) is specified, also includes the `#[cfg(...)]`
+impl fmt::Display for Cfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.alternate() {
+            f.write_str("#[cfg(")?;
+        }
+
+        f.write_str(&self.cfg)?;
+
+        if f.alternate() {
+            f.write_str(")]")?;
+        };
+
+        Ok(())
+    }
+}
+
+impl Debug for Cfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <Cfg as Display>::fmt(&self, f)
+    }
+}
+
+impl PartialOrd for Cfg {
+    fn partial_cmp(&self, other: &Cfg) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Cfg {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.cfg.cmp(&other.cfg)
+    }
+}
+
+impl Display for Aliased {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(cfg) = &self.cfg {
+            Display::fmt(&cfg, f)?;
+        }
+
+        Display::fmt(&self.item, f)
+    }
+}
+
+impl Debug for Alias {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <Ident as Debug>::fmt(&self.0, f)
+    }
+}
+
+impl Display for Alias {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <Ident as Display>::fmt(&self.0, f)
+    }
+}
+
+impl PartialEq for Cfg {
+    fn eq(&self, other: &Self) -> bool {
+        self.cfg.eq(&other.cfg)
+    }
+}
+
+impl Eq for Cfg {}
+
+impl Hash for Cfg {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.cfg.hash(state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,7 +1148,7 @@ mod tests {
                 "{}",
                 file.errors
                     .iter()
-                    .map(|err| render_error(err, &file.span.file.to_string_lossy(), source))
+                    .map(|err| render_error(err, file.span.file.clone(), source))
                     .collect::<String>()
             );
         }

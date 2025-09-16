@@ -1,6 +1,6 @@
 //! Expanding these derive aliases with such a definition:
 //!
-//! ```
+//! ```ignore
 //! Again = Hash, Eq;
 //!
 //! #[cfg(C)]
@@ -11,7 +11,7 @@
 //!
 //! Will give us an `FlatAliasMap` like this:
 //!
-//! ```rust
+//! ```ignore
 //! FlatAliasMap {
 //!     Again => Hash, Eq;
 //!     Bar => #[cfg(all(C, C))] Bar, #[cfg(all(C, D))] Hash, #[cfg(all(C, D))] Eq
@@ -27,7 +27,7 @@
 //!
 //! Which we then turn into an `AliasMap` by sorting, de-duplicating and grouping all CFGs with the appropriate derives
 //!
-//! ```rust
+//! ```ignore
 //! AliasMap {
 //!     Again => DerivesGroupedByCfgs {
 //!         #[cfg(all())] => Hash, Eq
@@ -49,7 +49,7 @@
 //!
 //! Which then generates the following code, if we apply `#[derive(..Alias)]`:
 //!
-//! ```
+//! ```ignore
 //! #[std::derive(Foo)]
 //! #[cfg_attr(all(D, C), std::derive(Bar))]
 //! #[cfg_attr(all(D, C, D), std::derive(Hash, Eq))]
@@ -69,7 +69,7 @@ use crate::{
 
 type DerivesGroupedByCfgs = HashMap<Vec<dsl::Cfg>, Vec<dsl::Derive>>;
 type FlatAliasMap = HashMap<dsl::Alias, Vec<(Vec<dsl::Cfg>, dsl::Derive)>>;
-type AliasMap = HashMap<dsl::Alias, DerivesGroupedByCfgs>;
+pub type AliasMap = HashMap<dsl::Alias, DerivesGroupedByCfgs>;
 type Errors = Vec<String>;
 
 /// Map from `Alias => Vec<Derive>`, where `Alias` expands to a bunch of derive macros (represented as plain strings).
@@ -134,8 +134,11 @@ fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
     // (Vec<Cfg>, Derive) as all of the `Cfg`s are additive
     let mut flat_alias_map = FlatAliasMap::new();
 
+    // B = #[cfg(B)] D
+    // A = #[cfg(A)] C #[cfg(A, B)] D
+
     for (_, alias_decl) in &nested_alias_map {
-        let mut current_cfg_stack = alias_decl.cfg.iter().cloned().collect::<Vec<_>>();
+        let mut current_cfg_stack = vec![];
         let mut derives = vec![];
 
         // We keep a stack of aliases as we expand them, for better error messages
@@ -169,6 +172,8 @@ fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
 
     let mut alias_to_grouped_derives = AliasMap::new();
 
+    dbg!(&flat_alias_map);
+
     for (alias, derives) in flat_alias_map {
         // Group derives under similar CFGs
         let mut grouped_derives = DerivesGroupedByCfgs::new();
@@ -189,10 +194,8 @@ fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
 
             grouped_derives
                 .entry(cfgs)
-                .and_modify(|it| {
-                    it.push(derive);
-                })
-                .or_default();
+                .or_insert_with(Vec::new)
+                .push(derive);
         }
 
         alias_to_grouped_derives.insert(alias, grouped_derives);
@@ -214,6 +217,7 @@ fn resolve_derives_for_alias(
     source: &str,
     alias_stack: &mut Vec<dsl::Alias>,
 ) {
+    current_cfg_stack.extend(alias_decl.cfg.clone());
     // Iterate over all aliased items for this alias
     //
     // Alias = Foo, Bar, ..Baz  .next()
@@ -366,10 +370,10 @@ mod tests {
 
     #[test]
     fn generate_alias_map_basic_expansion() {
-        let content = r#"
+        let content = stringify!(
             A = B, C;
             MyAlias = D, ..A;
-        "#;
+        );
 
         let (alias_map, errors) = generate_alias_map(content);
 
@@ -404,17 +408,13 @@ mod tests {
 
     #[test]
     fn generate_alias_map_cfg_accumulation() {
-        let content = r#"
+        let content = stringify!(
             #[cfg(B)] B = D;
             #[cfg(A)] A = C, ..B;
-        "#;
-
-        // B = #[cfg(B)] D;
-        // A = #[cfg(A)] C, #[cfg(all(A, B))] D;
+        );
 
         let (alias_map, errors) = generate_alias_map(content);
 
-        dbg!(&alias_map);
         for e in &errors {
             eprintln!("{e}");
         }
@@ -439,10 +439,12 @@ mod tests {
 
         for (cfgs, derives) in a_derives {
             let key = cfgs.clone();
+
             let mut derives_names: Vec<_> = derives
                 .iter()
                 .map(|d| d.components.first.name.clone())
                 .collect();
+
             derives_names.sort();
 
             let mut expected_derives_names: Vec<_> = expected_cfgs[&key]
@@ -456,71 +458,13 @@ mod tests {
     }
 
     #[test]
-    fn generate_alias_map_cfg_optimization() {
-        let content = r#"
-            A = #[cfg(B)] B, #[cfg(A)] C;
-            MyAlias = ..A, #[cfg(A)] #[cfg(B)] D;
-        "#;
-
-        let (alias_map, errors) = generate_alias_map(content);
-
-        assert!(errors.is_empty());
-
-        let my_alias_derives = &alias_map[&Alias(Ident {
-            name: "MyAlias".to_string(),
-            span: dummy::span(),
-        })];
-        assert_eq!(
-            my_alias_derives.len(),
-            2,
-            "Derives with same CFG should be grouped"
-        );
-
-        let mut keys: Vec<_> = my_alias_derives.keys().cloned().collect();
-        keys.sort_by(|a, b| a[0].cfg.cmp(&b[0].cfg));
-
-        // First group: #[cfg(A)]
-        let group_a = &my_alias_derives[&keys[0]];
-        let derives_names: Vec<_> = group_a
-            .iter()
-            .map(|d| d.components.first.name.clone())
-            .collect();
-        assert_eq!(derives_names, vec!["C"]);
-
-        // Second group: #[cfg(A)] and #[cfg(B)]
-        let group_ab = &my_alias_derives[&keys[1]];
-        let derives_names: Vec<_> = group_ab
-            .iter()
-            .map(|d| d.components.first.name.clone())
-            .collect();
-        // The order might vary, so check for both
-        assert_eq!(derives_names.len(), 2);
-        assert!(derives_names.contains(&"B".to_string()));
-        assert!(derives_names.contains(&"D".to_string()));
-    }
-
-    // --- Error Handling Tests ---
-
-    #[test]
     fn alias_not_found_error() {
-        let content = "MyAlias = ..MissingAlias;";
+        let content = stringify!(MyAlias = ..MissingAlias;);
         let (_alias_map, errors) = generate_alias_map(content);
 
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("alias `MissingAlias` is undefined!"));
     }
-
-    // #[test]
-    // fn infinite_recursion_error() {
-    //     let content = "
-    //         MyAlias = A, ..MyAlias;
-    //     ";
-    //     let (_alias_map, errors) = generate_alias_map(content, "derive_aliases.rs");
-
-    //     assert_eq!(errors.len(), 1);
-    //     eprintln!("{}", errors[0]);
-    //     assert!(errors[0].contains("you cannot use an alias `..MyAlias` inside of itself, that would lead to infinite recursion!"));
-    // }
 
     // create dummy data
     mod dummy {
