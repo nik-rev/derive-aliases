@@ -7,6 +7,49 @@ use crate::{chain, dsl};
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 use std::{collections::HashSet, iter};
 
+/// Create a dummy import like this:
+///
+/// ```ignore
+/// use crate::derive_aliases_doc::MyAlias as _;
+/// ```
+///
+/// Then hovering over `MyAlias`:
+///
+/// ```ignore
+/// #[derive(..MyAlias)]
+///         // ^^^^^^^
+/// ```
+///
+/// Will actually show documentation for the `derive_aliases_doc::MyAlias` because
+/// we relate their spans together
+pub fn dummy_import(alias: proc_macro::Ident) -> impl Iterator<Item = TokenTree> {
+    chain![
+        ident("use"),
+        ident("crate"),
+        path_sep(),
+        ident("derive_aliases_doc"),
+        path_sep(),
+        [TokenTree::Ident(Ident::new(
+            &alias.to_string(),
+            // TODO: This span only covers the identifier part:
+            //
+            // ..Alias
+            //   ^^^^^
+            //
+            // What we actually want is a span that also covers the 2 dots:
+            //
+            // ..Alias
+            // ^^^^^^^
+            //
+            // This would be possible with `Span::join`, but it is unstable
+            alias.span()
+        ))],
+        ident("as"),
+        ident("_"),
+        punct(';')
+    ]
+}
+
 /// `.into_iter()` generates `compile_error!($message)` at `$span`
 pub struct CompileError {
     /// Where the compile error is generates
@@ -105,7 +148,6 @@ pub fn attr_with_inner(attr: &str, inner: &str) -> impl Iterator<Item = TokenTre
 pub fn cfg_std_derive_attr(
     cfgs: &[dsl::Cfg],
     derives: &[dsl::Derive],
-    docs: &mut TokenStream,
     seen: &mut HashSet<dsl::Derive>,
 ) -> impl Iterator<Item = TokenTree> {
     // stuff #[<-- inside here ->]
@@ -124,7 +166,7 @@ pub fn cfg_std_derive_attr(
                         .expect("token stream inside of `#[cfg(...)]` is invalid")
                 ),
                 punct(','),
-                std_derive(into_std_derive_arguments(cfgs, derives, docs, seen).collect())
+                std_derive(into_std_derive_arguments(cfgs, derives, seen).collect())
             ]
             .collect()
         }
@@ -150,7 +192,7 @@ pub fn cfg_std_derive_attr(
                         .collect()
                 ),
                 punct(','),
-                std_derive(into_std_derive_arguments(cfgs, derives, docs, seen).collect())
+                std_derive(into_std_derive_arguments(cfgs, derives, seen).collect())
             ]
             .collect()
         }
@@ -180,7 +222,6 @@ pub fn attr(tt: TokenStream) -> impl Iterator<Item = TokenTree> {
 pub fn into_std_derive_arguments(
     cfgs: &[dsl::Cfg],
     derives: &[dsl::Derive],
-    docs: &mut TokenStream,
     seen: &mut HashSet<dsl::Derive>,
 ) -> impl Iterator<Item = TokenTree> {
     // This is the token stream passed inside: #[std::derive(<-- all_derives ->)]`
@@ -201,12 +242,6 @@ pub fn into_std_derive_arguments(
             // Mark as seen. If we then come across this exact at some point later, we'll ignore it
             seen.insert(derive.clone());
         }
-
-        // Add a single documentation line to the Alias which describes this Derive.
-        // This derive is one of the derives that Alias expands to
-        docs.extend(doc_comment(&crate::single_line_of_doc_comment_for_derive(
-            cfgs, derive,
-        )));
 
         // build tokens for path of the derive, e.g. `std::hash::Hash`
 

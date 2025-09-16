@@ -1,6 +1,9 @@
 #![cfg(test)]
+
 #[macro_use]
 extern crate derive_aliases;
+
+mod derive_aliases_doc;
 
 macro_rules! implements_traits {
     ($name:ident #[$($derive:ident)::*($($input:tt)*)] => $($($segment:ident)::*),*) => {

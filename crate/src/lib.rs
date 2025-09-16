@@ -207,11 +207,14 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
     // These are all arguments to the plain `#[std::derive(<-- here -->)]`s that doesn't require any `cfg`
     let mut no_cfg_derives = TokenStream::new();
 
-    // These are the temporary unit `struct`s that contains documentation about each `..Alias`
+    // These imports exist only for documentation. They look like this:
     //
-    // The `span` of each `struct` is set to the `..Alias`, so hovering over the `..Alias` shows you
-    // documentation about what it expands to
-    let mut documentation_for_all_aliases = Vec::new();
+    // use crate::derive_aliases_doc::SomeAlias as _;
+    //                                ^^^^^^^^
+    //
+    // The `SomeAlias` will contain documentation about what the alias `..SomeAlias` expands to.
+    // When user hovers over `..SomeAlias`, they will see the docs about it
+    let mut dummy_imports_for_docs = TokenStream::new();
 
     // We collect all errors in a single stream so we can report them all at once,
     // and rust-analyzer allows to continue us to work with other derives - even though we may have syntax errors somewhere
@@ -223,7 +226,7 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
     compile_errors.extend(
         errors
             .iter()
-            .flat_map(|err| CompileError::new(Span::mixed_site(), err)),
+            .flat_map(|err| CompileError::new(Span::call_site(), err)),
     );
 
     while let Some(tt) = input.next() {
@@ -267,7 +270,7 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
 
         let alias_string = Alias::new(alias.to_string());
 
-        // All derives that this alias references, fully resolved.
+        // All derives that this alias will expand to
         let Some(derives) = alias_map.get(&alias_string) else {
             let all_aliases = format_list(alias_map.keys().map(|key| &key.0.name));
 
@@ -293,15 +296,6 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
             continue;
         };
 
-        // A single `struct` that holds documentation for the current alias
-        let mut alias_documentation = TokenStream::from_iter(chain![
-            codegen::attr_with_inner("doc", "hidden"),
-            codegen::attr_with_inner("allow", "non_camel_case_types"),
-            codegen::doc_comment(&format!(
-                "Derive alias `..{alias_string}` expands to the following derives:\n"
-            ))
-        ]);
-
         for (cfg, derives) in derives {
             if cfg.is_empty() {
                 // These are stuff that goes inside of  `#[std::derive(<-- here -->)]` requiring no cfg
@@ -310,7 +304,6 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
                 no_cfg_derives.extend(codegen::into_std_derive_arguments(
                     cfg,
                     derives,
-                    &mut alias_documentation,
                     &mut seen_expanded,
                 ));
             } else {
@@ -318,50 +311,22 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
                 cfg_attr_derives.extend(codegen::cfg_std_derive_attr(
                     cfg,
                     derives,
-                    &mut alias_documentation,
                     &mut seen_expanded,
                 ));
             }
         }
 
-        // This is the `struct` who's entire purpose is just to document what this alias expands to
-        alias_documentation.extend([
-            TokenTree::Ident(Ident::new("struct", Span::call_site())),
-            TokenTree::Ident(Ident::new(
-                &format!(
-                    "{alias_string}__derive__alias__{}",
-                    // when we use the same alias multiple times in the same module,
-                    // we don't want names of the generated documentation items to clash
-                    ALIASES_OUTPUTTED.fetch_add(1, std::sync::atomic::Ordering::Acquire)
-                ),
-                // when user hovers over the alias, they'll actually see docs for what it produces!
-                //
-                // TODO: This span only covers the identifier part:
-                //
-                // ..Alias
-                //   ^^^^^
-                //
-                // What we actually want is a span that also covers the 2 dots:
-                //
-                // ..Alias
-                // ^^^^^^^
-                //
-                // This would be possible with `Span::join`, but it is unstable
-                alias.span(),
-            )),
-            TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-        ]);
-
-        documentation_for_all_aliases.push(alias_documentation);
+        // dummy `use` simply to reference the `alias` in the generated doc module, for documentation on hover
+        dummy_imports_for_docs.extend(codegen::dummy_import(alias));
     }
 
-    documentation_for_all_aliases
-        .into_iter()
-        .flatten()
-        .chain(cfg_attr_derives)
-        .chain(codegen::attr(codegen::std_derive(no_cfg_derives).collect()))
-        .chain(compile_errors)
-        .collect()
+    chain![
+        dummy_imports_for_docs,
+        cfg_attr_derives,
+        codegen::attr(codegen::std_derive(no_cfg_derives).collect()),
+        compile_errors,
+    ]
+    .collect()
 }
 
 /// Intersperse list with commas and show it as a string
@@ -398,58 +363,6 @@ fn most_similar_alias(alias: impl AsRef<str>) -> Option<String> {
         // we just ignore if we can't find above a certain similarity threshold
         .filter(|it| it.1 >= 0.70)
         .map(|it| it.0)
-}
-
-/// Hovering on aliases shows documentation for them. This function generates 1 line of such documentation
-///
-/// This is the function that generates documentation
-/// for a **single** derive that comes from the expansion of an alias.
-/// The `cfgs` are the cumulative `cfg` predicates that will be rendered, if non-empty.
-///
-/// ```rs
-/// Eq = PartialEq, #[cfg(bar)] Eq;
-/// Ord = PartialOrd, Ord, #[cfg(foo)] ..Eq;
-/// ```
-///
-/// When expanding `..Ord`, we will generate *something like* the following documentation on a throwaway
-/// `struct` for which we just attach documentation comments:
-///
-/// ```ignore
-/// /// - [`PartialOrd`]
-/// /// - [`Ord`]
-/// /// - [`PartialEq`] when `#[cfg(foo)]`
-/// /// - [`Eq`] when `#[cfg(all(foo, bar))]`
-/// struct throwaway_struct_only_for_documentation_of_alias_1425042150;
-/// ```
-///
-/// Each bullet point corresponds to a single invocation of this function.
-fn single_line_of_doc_comment_for_derive(cfgs: &[dsl::Cfg], derive: &dsl::Derive) -> String {
-    let mut doc_line = format!("- [`{derive}`]");
-
-    if cfgs.len() == 1 {
-        // `#` will also render `#[cfg(...)]` attribute wrapper
-        doc_line.push_str(&format!(" when `{doc_line:#}`"));
-    } else if cfgs.len() > 2 {
-        doc_line.push_str(" when ");
-        doc_line.push_str("`#[cfg(all(");
-        for (i, cfg) in cfgs.iter().enumerate() {
-            // This renders a predicate, e.g. `feature = "serde"`
-            doc_line.push_str(&cfg.to_string());
-
-            let is_last = i + 1 == cfgs.len();
-
-            if !is_last {
-                // Intersperse all CFG predicates with commas, except the last one
-                //
-                // cfg, cfg2, cfg3
-                //    ^^    ^^
-                doc_line.push_str(", ");
-            }
-        }
-        doc_line.push_str("))]`");
-    }
-
-    doc_line
 }
 
 /// How many aliases were generated
