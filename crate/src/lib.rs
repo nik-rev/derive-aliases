@@ -200,9 +200,12 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
     // Stuff we receive inside our attribute macro's input, aka everything inside of `#[derive(<--here-->)]`
     let mut input = input.into_iter().peekable();
 
-    // These are all of the `#[std::derive(..)]` and `#[cfg_attr(.., std::derive(..))]` attributes
+    // These are all of the `#[cfg_attr(.., std::derive(..))]` attributes
     // that we will generate.
-    let mut attrs = TokenStream::new();
+    let mut cfg_attr_derives = TokenStream::new();
+
+    // These are all arguments to the plain `#[std::derive(<-- here -->)]`s that doesn't require any `cfg`
+    let mut no_cfg_derives = TokenStream::new();
 
     // These are the temporary unit `struct`s that contains documentation about each `..Alias`
     //
@@ -226,12 +229,12 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
     while let Some(tt) = input.next() {
         // We manually have to handle all `..Alias`es, but regular derives will be passed to `std::derive` verbatim
         let TokenTree::Punct(ref dot) = tt else {
-            attrs.extend([tt]);
+            no_cfg_derives.extend([tt]);
             continue;
         };
 
         if dot.as_char() != '.' {
-            attrs.extend([tt]);
+            no_cfg_derives.extend([tt]);
             continue;
         }
 
@@ -300,13 +303,25 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
         ]);
 
         for (cfg, derives) in derives {
-            // This is a list of `#[std::derive(..)]` attributes. Each one may, or may not be inside of `#[cfg_attr(.., std::derive(..))]`
-            attrs.extend(codegen::cfg_std_derive_attr(
-                cfg,
-                derives,
-                &mut alias_documentation,
-                &mut seen_expanded,
-            ));
+            if cfg.is_empty() {
+                // These are stuff that goes inside of  `#[std::derive(<-- here -->)]` requiring no cfg
+                // Doing it this way is necessary as we'll append regular derives that don't come from an alias
+                // expansion into the same TokenStream. Also, it reduces how many tokens we output which makes the macro faster
+                no_cfg_derives.extend(codegen::into_std_derive_arguments(
+                    cfg,
+                    derives,
+                    &mut alias_documentation,
+                    &mut seen_expanded,
+                ));
+            } else {
+                // A list of attributes, each one is inside of `#[cfg_attr(.., std::derive(..))]`
+                cfg_attr_derives.extend(codegen::cfg_std_derive_attr(
+                    cfg,
+                    derives,
+                    &mut alias_documentation,
+                    &mut seen_expanded,
+                ));
+            }
         }
 
         // This is the `struct` who's entire purpose is just to document what this alias expands to
@@ -331,7 +346,8 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
     documentation_for_all_aliases
         .into_iter()
         .flatten()
-        .chain(attrs)
+        .chain(cfg_attr_derives)
+        .chain(codegen::attr(codegen::std_derive(no_cfg_derives).collect()))
         .chain(compile_errors)
         .collect()
 }

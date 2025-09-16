@@ -110,10 +110,9 @@ pub fn cfg_std_derive_attr(
 ) -> impl Iterator<Item = TokenTree> {
     // stuff #[<-- inside here ->]
     let input = match cfgs {
-        [] => {
-            // std::derive($derives)
-            std_derive(cfgs, derives, docs, seen).collect()
-        }
+        [] => panic!(
+            "caller handles empty `cfg` specially, by placing them into a single TokenStream"
+        ),
         [cfg] => {
             // cfg_attr($cfg), std::derive($derives)
             chain![
@@ -125,7 +124,7 @@ pub fn cfg_std_derive_attr(
                         .expect("token stream inside of `#[cfg(...)]` is invalid")
                 ),
                 punct(','),
-                std_derive(cfgs, derives, docs, seen)
+                std_derive(into_std_derive_arguments(cfgs, derives, docs, seen).collect())
             ]
             .collect()
         }
@@ -151,24 +150,34 @@ pub fn cfg_std_derive_attr(
                         .collect()
                 ),
                 punct(','),
-                std_derive(cfgs, derives, docs, seen)
+                std_derive(into_std_derive_arguments(cfgs, derives, docs, seen).collect())
             ]
             .collect()
         }
     };
 
+    // unsafe {
+    //     foo += 1;
+    // }
+
+    // let a = attr(input);
+
+    // if unsafe { foo == 1 } {
+    //     panic!("{}", a.collect::<TokenStream>());
+    // }
+
     attr(input)
 }
+
+// static mut foo: usize = 0;
 
 /// Wrap token stream in an attribute: `#[$tt]`
 pub fn attr(tt: TokenStream) -> impl Iterator<Item = TokenTree> {
     punct('#').chain(group::<'['>(tt))
 }
 
-/// Generate `::core::prelude::v1::derive($derives)`. We refer to it as `std::derive` everywhere for simplicity.
-///
-/// Our macro expands aliases then passes it to the standard library `derive`
-pub fn std_derive(
+/// Resolve the derive arguments into something that can be passed into `std::derive(..)`
+pub fn into_std_derive_arguments(
     cfgs: &[dsl::Cfg],
     derives: &[dsl::Derive],
     docs: &mut TokenStream,
@@ -177,7 +186,11 @@ pub fn std_derive(
     // This is the token stream passed inside: #[std::derive(<-- all_derives ->)]`
     let mut all_derives = TokenStream::new();
 
-    for derive in derives {
+    for (is_last, derive) in derives
+        .iter()
+        .enumerate()
+        .map(|(i, derive)| (i + 1 == derives.len(), derive))
+    {
         if seen.contains(derive) {
             // We've seen this derive before. Remember that we don't want to generate the same derive multiple times
             // and we allow using 2 aliases in the same derive even if they have overlapping aliases
@@ -208,9 +221,31 @@ pub fn std_derive(
             all_derives.extend(ident(&component.name));
         }
 
-        all_derives.extend(punct(','));
+        // No trailing comma, this is especially important when we have no `cfg`s.
+        //
+        // e.g. we have:
+        //
+        // ..Alias, std::hash::Hash
+        //
+        // this might expand to:
+        //
+        // PartialEq, Eq, std::hash::Hash
+        // ^^^^^^^^^^^^^ from expansion of `Alias`
+        //
+        //              ^ this comma is the same from the original input
+        //
+        // If we had actually inserted a trailing comma, we would have 2 commas in a row
+        // which would be a syntax error
+        if !is_last {
+            all_derives.extend(punct(','));
+        }
     }
 
+    all_derives.into_iter()
+}
+
+/// Generates `::core::prelude::v1::derive($derives)`. We refer to it as `std::derive` everywhere for simplicity.
+pub fn std_derive(derives: TokenStream) -> impl Iterator<Item = TokenTree> {
     chain![
         path_sep(),
         ident("core"),
@@ -220,7 +255,7 @@ pub fn std_derive(
         ident("v1"),
         path_sep(),
         ident("derive"),
-        group::<'('>(all_derives),
+        group::<'('>(derives),
     ]
 }
 

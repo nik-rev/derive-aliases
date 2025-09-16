@@ -172,8 +172,6 @@ fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
 
     let mut alias_to_grouped_derives = AliasMap::new();
 
-    dbg!(&flat_alias_map);
-
     for (alias, derives) in flat_alias_map {
         // Group derives under similar CFGs
         let mut grouped_derives = DerivesGroupedByCfgs::new();
