@@ -291,17 +291,13 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
         };
 
         // A single `struct` that holds documentation for the current alias
-        let mut alias_documentation = TokenStream::new();
-
-        alias_documentation.extend(codegen::attr_with_inner("doc", "hidden"));
-        alias_documentation.extend(codegen::attr_with_inner("allow", "non_camel_case_types"));
-
-        alias_documentation.extend(codegen::doc_comment(&format!(
-            "Derive alias `..{alias_string}` expands to the following derives:\n"
-        )));
-
-        // Generate a single line of Documentation `#[doc = ...]" for each Derive that this Alias expands to,
-        // Also push all of those derives into the final token stream passed to `#[std::derive]`
+        let mut alias_documentation = TokenStream::from_iter(chain![
+            codegen::attr_with_inner("doc", "hidden"),
+            codegen::attr_with_inner("allow", "non_camel_case_types"),
+            codegen::doc_comment(&format!(
+                "Derive alias `..{alias_string}` expands to the following derives:\n"
+            ))
+        ]);
 
         for (cfg, derives) in derives {
             // This is a list of `#[std::derive(..)]` attributes. Each one may, or may not be inside of `#[cfg_attr(.., std::derive(..))]`
@@ -428,4 +424,5 @@ fn single_line_of_doc_comment_for_derive(cfgs: &[dsl::Cfg], derive: &dsl::Derive
     doc_line
 }
 
+/// How many aliases were generated
 static ALIASES_OUTPUTTED: AtomicUsize = AtomicUsize::new(0);
