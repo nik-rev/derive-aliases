@@ -8,6 +8,7 @@
 //! alphabetic := 'a'..='z' | 'A'..='Z'
 //! alphanumeric := alphabetic | '0'..='9'
 //! string := '"' .* '"'
+//! path := string
 //!
 //! Ident := '_' | alphabetic [ '_' | alphanumeric ]*
 //! Derive := "::"? Ident [ "::" Ident ]*
@@ -19,10 +20,10 @@
 //!
 //! AliasDeclaration := Cfg? Alias '=' Aliased  [ ',' Aliased ]* ','?
 //!
-//! Import := "use" string  
+//! Import := "use" path  
 //!
 //! Stmt := AliasDeclaration | Import
-//! Dsl := [ Stmt ';' ] *
+//! File := [ Stmt ';' ] *
 //! ```
 
 use std::hash::Hash;
@@ -292,9 +293,9 @@ impl<'a> Parser<'a> {
     /// Like `eat`, but asserts the exact character we expect to see
     fn expect(&mut self, c: char) {
         let ch = self.eat().expect("non-empty");
-        assert_eq!(
+        debug_assert_eq!(
             ch, c,
-            "BUG: expected {c} as offset {}, but found {ch}",
+            "BUG: expected {c} at offset {}, but found {ch}",
             self.offset
         );
     }
@@ -421,7 +422,7 @@ impl<'a> Parser<'a> {
     fn skip_to_recover(&mut self) {
         while let Some(c) = self.peek() {
             if c == ';' {
-                self.eat();
+                self.expect(';');
                 return;
             }
             self.eat();
@@ -891,7 +892,7 @@ pub fn parse_single_file(source: impl AsRef<str>, file_path: impl AsRef<Path>) -
 }
 
 /// Render a single error, showing span information and location in the source file
-pub fn render_error(error: &ParseError, file: &str, source: &str) -> String {
+pub fn render_error(error: &ParseError, file: Arc<PathBuf>, source: &str) -> String {
     let mut rendered_error = String::new();
     let span = &error.span;
     let start = span.location.start.max(0);
@@ -904,7 +905,8 @@ pub fn render_error(error: &ParseError, file: &str, source: &str) -> String {
         .count();
 
     rendered_error.push_str(&format!(
-        "[{file}:{start_line}:{start_col}] Parse Error: {}:\n\n",
+        "[{}:{start_line}:{start_col}] Parse Error: {}:\n\n",
+        file.display(),
         error.message
     ));
 

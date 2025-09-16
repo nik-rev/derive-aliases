@@ -55,23 +55,29 @@
 //! #[cfg_attr(all(D, C, D), std::derive(Hash, Eq))]
 //! ```
 
-use std::{collections::HashMap, iter, path::Path, sync::LazyLock};
+use std::{
+    collections::HashMap,
+    iter,
+    path::{Path, PathBuf},
+    sync::{Arc, LazyLock},
+};
 
 use crate::{
-    dsl::{self, parse_single_file, render_error, Alias, AliasDeclaration, ParseError, Stmt},
+    dsl::{self, render_error, Alias, AliasDeclaration, ParseError, Stmt},
     format_list, most_similar_alias,
 };
 
 type DerivesGroupedByCfgs = HashMap<Vec<dsl::Cfg>, Vec<dsl::Derive>>;
 type FlatAliasMap = HashMap<dsl::Alias, Vec<(Vec<dsl::Cfg>, dsl::Derive)>>;
 type AliasMap = HashMap<dsl::Alias, DerivesGroupedByCfgs>;
+type Errors = Vec<String>;
 
 /// Map from `Alias => Vec<Derive>`, where `Alias` expands to a bunch of derive macros (represented as plain strings).
 ///
 /// We don't store the `TokenTree`s directly because they are `!Sync`
-pub static ALIAS_MAP: LazyLock<(AliasMap, Vec<String>)> = LazyLock::new(|| {
+pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
     let Ok(dir) = std::env::var("CARGO_WORKSPACE_DIR") else {
-        return (HashMap::default(), vec![String::from(concat!(
+        return (AliasMap::default(), vec![String::from(concat!(
             "\n\n`CARGO_WORKSPACE_DIR` environment variable must be set, which points to the directory containing the\n",
             "workspace `Cargo.toml`. Since cargo currently doesn't set this variable, in your workspace create `.cargo/config.toml` with contents:\n",
             "\n",
@@ -86,7 +92,7 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Vec<String>)> = LazyLock::new(|| {
         Ok(content) => content,
         Err(err) => {
             return (
-                HashMap::default(),
+                AliasMap::default(),
                 vec![format!(
                     concat!(
                         "expected {} to exist and contain derive aliases. error: {}.\nhere's an ",
@@ -100,13 +106,13 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Vec<String>)> = LazyLock::new(|| {
         }
     };
 
-    generate_alias_map(&content, &path.to_string_lossy())
+    generate_alias_map(&content, Arc::new(path))
 });
 
 /// Create the `AliasMap`
 ///
 /// Separate function for use in tests
-fn generate_alias_map(content: &str, path: &str) -> (AliasMap, Vec<String>) {
+fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
     // Recursive map of `Alias => (..Alias OR Derive)`, where `Derive` is a "leaf" but an `..Alias` can
     // be expanded into a list of (..Alias OR Derive)
     let (nested_alias_map, mut errors) = parse(&content, &path.as_ref());
@@ -126,7 +132,7 @@ fn generate_alias_map(content: &str, path: &str) -> (AliasMap, Vec<String>) {
     //
     // Additionally, we keep track of all `#[cfg]`s and add them to a `Vec<Cfg>`, so we end up storing
     // (Vec<Cfg>, Derive) as all of the `Cfg`s are additive
-    let mut flat_alias_map = HashMap::<dsl::Alias, Vec<(Vec<dsl::Cfg>, dsl::Derive)>>::new();
+    let mut flat_alias_map = FlatAliasMap::new();
 
     for (_, alias_decl) in &nested_alias_map {
         let mut current_cfg_stack = alias_decl.cfg.iter().cloned().collect::<Vec<_>>();
@@ -141,7 +147,7 @@ fn generate_alias_map(content: &str, path: &str) -> (AliasMap, Vec<String>) {
             &mut current_cfg_stack,
             &mut derives,
             &mut errors,
-            path.as_ref(),
+            path.clone(),
             content.as_ref(),
             &mut alias_stack,
         );
@@ -203,8 +209,8 @@ fn resolve_derives_for_alias(
     mut current_cfg_stack: &mut Vec<dsl::Cfg>,
     // derives for the current alias
     derives: &mut Vec<(Vec<dsl::Cfg>, dsl::Derive)>,
-    errors: &mut Vec<String>,
-    file: &str,
+    errors: &mut Errors,
+    file: Arc<PathBuf>,
     source: &str,
     alias_stack: &mut Vec<dsl::Alias>,
 ) {
@@ -245,7 +251,7 @@ fn resolve_derives_for_alias(
                                 alias_decl.alias.0.name
                             ),
                         },
-                        &file,
+                        file.clone(),
                         &source,
                     ));
                     continue;
@@ -271,7 +277,7 @@ fn resolve_derives_for_alias(
                                 format_list(alias_map.iter().map(|(a, _)| &a.0.name))
                             ),
                         },
-                        &file,
+                        file.clone(),
                         &source,
                     ));
                     continue;
@@ -283,7 +289,7 @@ fn resolve_derives_for_alias(
                     current_cfg_stack,
                     derives,
                     errors,
-                    file,
+                    file.clone(),
                     source,
                     alias_stack,
                 );
@@ -301,11 +307,14 @@ pub fn parse(content: &str, path: &Path) -> (HashMap<Alias, AliasDeclaration>, V
         alias_declarations: &mut HashMap<Alias, AliasDeclaration>,
         errors: &mut Vec<String>,
     ) {
-        let file = parse_single_file(&content, path);
+        let file = dsl::parse_single_file(&content, path);
 
-        for error in file.errors {
-            render_error(&error, &file.span.file.to_string_lossy(), content);
-        }
+        // Add all of the syntax errors
+        errors.extend(
+            file.errors
+                .iter()
+                .map(|error| render_error(&error, file.span.file.clone(), content)),
+        );
 
         for stmt in file.stmts {
             match stmt {
@@ -324,7 +333,7 @@ pub fn parse(content: &str, path: &Path) -> (HashMap<Alias, AliasDeclaration>, V
                                         import.path.display()
                                     ),
                                 },
-                                &file.span.file.to_string_lossy(),
+                                file.span.file.clone(),
                                 content,
                             ));
                             continue;
@@ -351,6 +360,168 @@ mod tests {
     use crate::dsl::{self, Alias, Cfg, Derive, Ident, Span};
     use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+    fn generate_alias_map(content: &str) -> (AliasMap, Errors) {
+        super::generate_alias_map(content, Arc::new("derive_aliases.rs".into()))
+    }
+
+    #[test]
+    fn generate_alias_map_basic_expansion() {
+        let content = r#"
+            A = B, C;
+            MyAlias = D, ..A;
+        "#;
+
+        let (alias_map, errors) = generate_alias_map(content);
+
+        assert!(errors.is_empty());
+        assert_eq!(alias_map.len(), 2);
+
+        // Check A's group
+        let a_derives = &alias_map[&Alias(Ident {
+            name: "A".to_string(),
+            span: dummy::span(),
+        })];
+        assert_eq!(a_derives.len(), 1);
+        let (cfgs, derives) = a_derives.iter().next().unwrap();
+        assert!(cfgs.is_empty());
+        assert_eq!(derives.len(), 2);
+        assert_eq!(derives[0].components.first.name, "B");
+        assert_eq!(derives[1].components.first.name, "C");
+
+        // Check MyAlias's group
+        let my_alias_derives = &alias_map[&Alias(Ident {
+            name: "MyAlias".to_string(),
+            span: dummy::span(),
+        })];
+        assert_eq!(my_alias_derives.len(), 1);
+        let (cfgs, derives) = my_alias_derives.iter().next().unwrap();
+        assert!(cfgs.is_empty());
+        assert_eq!(derives.len(), 3);
+        assert_eq!(derives[0].components.first.name, "D");
+        assert_eq!(derives[1].components.first.name, "B");
+        assert_eq!(derives[2].components.first.name, "C");
+    }
+
+    #[test]
+    fn generate_alias_map_cfg_accumulation() {
+        let content = r#"
+            #[cfg(B)] B = D;
+            #[cfg(A)] A = C, ..B;
+        "#;
+
+        // B = #[cfg(B)] D;
+        // A = #[cfg(A)] C, #[cfg(all(A, B))] D;
+
+        let (alias_map, errors) = generate_alias_map(content);
+
+        dbg!(&alias_map);
+        for e in &errors {
+            eprintln!("{e}");
+        }
+
+        assert!(errors.is_empty());
+        assert_eq!(alias_map.len(), 2);
+
+        // Check A's group, which should contain two derives with different cfg predicates
+        let a_derives = &alias_map[&Alias(Ident {
+            name: "A".to_string(),
+            span: dummy::span(),
+        })];
+
+        assert_eq!(a_derives.len(), 2);
+
+        let mut expected_cfgs = HashMap::new();
+        expected_cfgs.insert(vec![dummy::cfg("A")], vec![dummy::derive("C")]);
+        expected_cfgs.insert(
+            vec![dummy::cfg("A"), dummy::cfg("B")],
+            vec![dummy::derive("D")],
+        );
+
+        for (cfgs, derives) in a_derives {
+            let key = cfgs.clone();
+            let mut derives_names: Vec<_> = derives
+                .iter()
+                .map(|d| d.components.first.name.clone())
+                .collect();
+            derives_names.sort();
+
+            let mut expected_derives_names: Vec<_> = expected_cfgs[&key]
+                .iter()
+                .map(|d| d.components.first.name.clone())
+                .collect();
+            expected_derives_names.sort();
+
+            assert_eq!(derives_names, expected_derives_names);
+        }
+    }
+
+    #[test]
+    fn generate_alias_map_cfg_optimization() {
+        let content = r#"
+            A = #[cfg(B)] B, #[cfg(A)] C;
+            MyAlias = ..A, #[cfg(A)] #[cfg(B)] D;
+        "#;
+
+        let (alias_map, errors) = generate_alias_map(content);
+
+        assert!(errors.is_empty());
+
+        let my_alias_derives = &alias_map[&Alias(Ident {
+            name: "MyAlias".to_string(),
+            span: dummy::span(),
+        })];
+        assert_eq!(
+            my_alias_derives.len(),
+            2,
+            "Derives with same CFG should be grouped"
+        );
+
+        let mut keys: Vec<_> = my_alias_derives.keys().cloned().collect();
+        keys.sort_by(|a, b| a[0].cfg.cmp(&b[0].cfg));
+
+        // First group: #[cfg(A)]
+        let group_a = &my_alias_derives[&keys[0]];
+        let derives_names: Vec<_> = group_a
+            .iter()
+            .map(|d| d.components.first.name.clone())
+            .collect();
+        assert_eq!(derives_names, vec!["C"]);
+
+        // Second group: #[cfg(A)] and #[cfg(B)]
+        let group_ab = &my_alias_derives[&keys[1]];
+        let derives_names: Vec<_> = group_ab
+            .iter()
+            .map(|d| d.components.first.name.clone())
+            .collect();
+        // The order might vary, so check for both
+        assert_eq!(derives_names.len(), 2);
+        assert!(derives_names.contains(&"B".to_string()));
+        assert!(derives_names.contains(&"D".to_string()));
+    }
+
+    // --- Error Handling Tests ---
+
+    #[test]
+    fn alias_not_found_error() {
+        let content = "MyAlias = ..MissingAlias;";
+        let (_alias_map, errors) = generate_alias_map(content);
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("alias `MissingAlias` is undefined!"));
+    }
+
+    // #[test]
+    // fn infinite_recursion_error() {
+    //     let content = "
+    //         MyAlias = A, ..MyAlias;
+    //     ";
+    //     let (_alias_map, errors) = generate_alias_map(content, "derive_aliases.rs");
+
+    //     assert_eq!(errors.len(), 1);
+    //     eprintln!("{}", errors[0]);
+    //     assert!(errors[0].contains("you cannot use an alias `..MyAlias` inside of itself, that would lead to infinite recursion!"));
+    // }
+
     // create dummy data
     mod dummy {
         use super::*;
@@ -358,7 +529,7 @@ mod tests {
         pub fn span() -> Span {
             Span {
                 location: 0..0,
-                file: Arc::new(PathBuf::from("test.da")),
+                file: Arc::new(PathBuf::from("derive_aliases.rs")),
             }
         }
 
@@ -422,164 +593,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn generate_alias_map_basic_expansion() {
-        let content = r#"
-            A = B, C;
-            MyAlias = D, ..A;
-        "#;
-
-        let (alias_map, errors) = generate_alias_map(content, "test.da");
-
-        assert!(errors.is_empty());
-        assert_eq!(alias_map.len(), 2);
-
-        // Check A's group
-        let a_derives = &alias_map[&Alias(Ident {
-            name: "A".to_string(),
-            span: dummy::span(),
-        })];
-        assert_eq!(a_derives.len(), 1);
-        let (cfgs, derives) = a_derives.iter().next().unwrap();
-        assert!(cfgs.is_empty());
-        assert_eq!(derives.len(), 2);
-        assert_eq!(derives[0].components.first.name, "B");
-        assert_eq!(derives[1].components.first.name, "C");
-
-        // Check MyAlias's group
-        let my_alias_derives = &alias_map[&Alias(Ident {
-            name: "MyAlias".to_string(),
-            span: dummy::span(),
-        })];
-        assert_eq!(my_alias_derives.len(), 1);
-        let (cfgs, derives) = my_alias_derives.iter().next().unwrap();
-        assert!(cfgs.is_empty());
-        assert_eq!(derives.len(), 3);
-        assert_eq!(derives[0].components.first.name, "D");
-        assert_eq!(derives[1].components.first.name, "B");
-        assert_eq!(derives[2].components.first.name, "C");
-    }
-
-    #[test]
-    fn generate_alias_map_cfg_accumulation() {
-        let content = r#"
-            #[cfg(B)] B = D;
-            #[cfg(A)] A = C, ..B;
-        "#;
-
-        compile_error!("run `cargo run`");
-
-        // B = #[cfg(B)] D;
-        // A = #[cfg(A)] C, #[cfg(all(A, B))] D;
-
-        let (alias_map, errors) = generate_alias_map(content, "test.da");
-
-        dbg!(&alias_map);
-        for e in &errors {
-            eprintln!("{e}");
-        }
-
-        assert!(errors.is_empty());
-        assert_eq!(alias_map.len(), 2);
-
-        // Check A's group, which should contain two derives with different cfg predicates
-        let a_derives = &alias_map[&Alias(Ident {
-            name: "A".to_string(),
-            span: dummy::span(),
-        })];
-
-        assert_eq!(a_derives.len(), 2);
-
-        let mut expected_cfgs = HashMap::new();
-        expected_cfgs.insert(vec![dummy::cfg("A")], vec![dummy::derive("C")]);
-        expected_cfgs.insert(
-            vec![dummy::cfg("A"), dummy::cfg("B")],
-            vec![dummy::derive("D")],
-        );
-
-        for (cfgs, derives) in a_derives {
-            let key = cfgs.clone();
-            let mut derives_names: Vec<_> = derives
-                .iter()
-                .map(|d| d.components.first.name.clone())
-                .collect();
-            derives_names.sort();
-
-            let mut expected_derives_names: Vec<_> = expected_cfgs[&key]
-                .iter()
-                .map(|d| d.components.first.name.clone())
-                .collect();
-            expected_derives_names.sort();
-
-            assert_eq!(derives_names, expected_derives_names);
-        }
-    }
-
-    #[test]
-    fn generate_alias_map_cfg_optimization() {
-        let content = r#"
-            A = #[cfg(B)] B, #[cfg(A)] C;
-            MyAlias = ..A, #[cfg(A)] #[cfg(B)] D;
-        "#;
-
-        let (alias_map, errors) = generate_alias_map(content, "test.da");
-
-        assert!(errors.is_empty());
-
-        let my_alias_derives = &alias_map[&Alias(Ident {
-            name: "MyAlias".to_string(),
-            span: dummy::span(),
-        })];
-        assert_eq!(
-            my_alias_derives.len(),
-            2,
-            "Derives with same CFG should be grouped"
-        );
-
-        let mut keys: Vec<_> = my_alias_derives.keys().cloned().collect();
-        keys.sort_by(|a, b| a[0].cfg.cmp(&b[0].cfg));
-
-        // First group: #[cfg(A)]
-        let group_a = &my_alias_derives[&keys[0]];
-        let derives_names: Vec<_> = group_a
-            .iter()
-            .map(|d| d.components.first.name.clone())
-            .collect();
-        assert_eq!(derives_names, vec!["C"]);
-
-        // Second group: #[cfg(A)] and #[cfg(B)]
-        let group_ab = &my_alias_derives[&keys[1]];
-        let derives_names: Vec<_> = group_ab
-            .iter()
-            .map(|d| d.components.first.name.clone())
-            .collect();
-        // The order might vary, so check for both
-        assert_eq!(derives_names.len(), 2);
-        assert!(derives_names.contains(&"B".to_string()));
-        assert!(derives_names.contains(&"D".to_string()));
-    }
-
-    // --- Error Handling Tests ---
-
-    #[test]
-    fn alias_not_found_error() {
-        let content = "MyAlias = ..MissingAlias;";
-        let (_alias_map, errors) = generate_alias_map(content, "test.da");
-
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("alias `MissingAlias` is undefined!"));
-    }
-
-    // #[test]
-    // fn infinite_recursion_error() {
-    //     let content = "
-    //         MyAlias = A, ..MyAlias;
-    //     ";
-    //     let (_alias_map, errors) = generate_alias_map(content, "test.da");
-
-    //     assert_eq!(errors.len(), 1);
-    //     eprintln!("{}", errors[0]);
-    //     assert!(errors[0].contains("you cannot use an alias `..MyAlias` inside of itself, that would lead to infinite recursion!"));
-    // }
 }
