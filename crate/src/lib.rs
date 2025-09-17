@@ -79,14 +79,8 @@ use codegen::{ident, ident_spanned, punct, CompileError};
 use dsl::Alias;
 use proc_macro::{Delimiter, Ident, Span, TokenStream, TokenTree};
 use std::collections::HashMap;
-use std::fmt::Write;
-use std::{
-    collections::HashSet,
-    fs::File,
-    io::{BufReader, BufWriter},
-    path::PathBuf,
-    sync::LazyLock,
-};
+use std::io::Write;
+use std::{collections::HashSet, fs::File, io::BufWriter, path::PathBuf, sync::LazyLock};
 
 mod alias_map;
 mod codegen;
@@ -108,7 +102,7 @@ pub(crate) use chain;
 
 macro_rules! write {
     ($($tt:tt)*) => {
-        std::writeln!($($tt)*).expect("won't happen")
+        std::write!($($tt)*).expect("won't happen")
     };
 }
 
@@ -118,11 +112,13 @@ macro_rules! write {
 #[cfg_attr(not(doc), doc(hidden))]
 #[proc_macro]
 pub fn define(derive_aliases: TokenStream) -> TokenStream {
-    // let file = File::open(&*FILE).expect("failed to open file at OUT_DIR");
-
-    // let mut w = BufWriter::new(file);
-
-    let mut w = String::new();
+    let file = File::create(&*DERIVE_ALIASES_FILE).unwrap_or_else(|err| {
+        panic!(
+            "failed to create file {}: {err}",
+            DERIVE_ALIASES_FILE.display()
+        )
+    });
+    let mut w = BufWriter::new(file);
 
     let mut tts = derive_aliases.into_iter().peekable();
     let mut errors = TokenStream::new();
@@ -272,6 +268,8 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
                 ]);
             }
             TokenTree::Punct(dot) if dot.as_char() == '.' => {
+                write!(w, "{}", dot.as_char());
+
                 // we are in an alias usage site
                 //
                 // Alias = Foo, ..Another
@@ -298,8 +296,6 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
                     // Consume the alias
                     tts.next();
                 }
-
-                write!(w, "{}", dot.as_char())
             }
             TokenTree::Punct(punct) if matches!(punct.as_char(), '=' | ',' | '#' | ';') => {
                 write!(w, "{}", punct.as_char())
@@ -318,7 +314,7 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
         }
     }
 
-    // panic!("{doc_tokens}");
+    w.flush().unwrap();
 
     TokenStream::from_iter(chain![
         codegen::attr(
@@ -338,7 +334,8 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
                 codegen::group::<'{'>(dummy_imports)
             ]
             .collect()
-        )
+        ),
+        errors
     ])
 }
 
@@ -624,33 +621,32 @@ fn most_similar_alias(alias: impl AsRef<str>) -> Option<String> {
         .map(|it| it.0)
 }
 
-/// Get the `OUT_DIR` because Rust doesn't set the env variable `OUT_DIR`
-fn out_dir() -> PathBuf {
-    // 1. Get the arguments for the rustc invocation
-    let mut args = std::env::args();
-
-    // 2. Find the value of "out-dir"
-    let mut out_dir = None;
-    while let Some(arg) = args.next() {
-        if arg == "--out-dir" {
-            out_dir = args.next();
-        }
-    }
-
-    // 3. Clean out_dir by removing all trailing directories, until it ends with target
-    let mut out_dir = PathBuf::from(
-        out_dir
-            .expect("Failed to find the output directory (env `OUT_DIR`), usually called `target`"),
-    );
-    while !out_dir.ends_with("target") {
-        if !out_dir.pop() {
-            // We ran out of directories...
-            panic!("Failed to find the output directory (env `OUT_DIR`), usually called `target`");
-        }
-    }
-
-    out_dir
-}
-
-/// The file where we will write derive aliases to
-static FILE: LazyLock<PathBuf> = LazyLock::new(out_dir);
+/// When the `derive_aliases::define!` macro is called, it processes the received
+/// `TokenStream` and then dumps the tokens into this file.
+///
+/// The first call of the `derive_aliases::derive!` macro will then parse contents of this file
+/// into an in-memory data structure [`ALIAS_MAP`], which contains a mapping from aliases to derives.
+///
+/// All other calls to `derive_aliases::derive!` will read directly from the efficient `ALIAS_MAP`
+/// and will not touch this static.
+///
+/// Extra weird: `derive_aliases::define!` itself reads from the file to generate documentation for
+/// all of the derive aliases. This obviously must be optional - if this variable is not set, the
+/// `derive_aliases::derive!` macro must compile (in order to create it in the first place!)
+static DERIVE_ALIASES_FILE: LazyLock<PathBuf> = LazyLock::new(|| {
+    // HACK: Cargo does not expose `OUT_DIR` and hacky methods of retrieving it (e.g. via `std::env::args()`)
+    // don't always work. So, what we do is create a unique filename in the temporary directory
+    //
+    // Every crate which depends on `derive_aliases` MUST have a unique file name that doesn't clash with
+    // each other. If not, then bugs will happen: if 2 crates have the same `DERIVE_ALIASES_FILE` then
+    // this derive macro will read from the same file for both of them, and compilation will fail
+    //
+    // To guarantee that this can never happen, we use `CARGO_MANIFEST_DIR` because it is unique for each crate
+    std::env::temp_dir().join(format!(
+        "derive_aliases_{}",
+        std::env::var("CARGO_MANIFEST_DIR")
+            .expect("expected env variable `CARGO_MANIFEST_DIR` to be defined")
+            // replace all path separators so we don't refer to directories
+            .replacen(std::path::MAIN_SEPARATOR, "_", usize::MAX)
+    ))
+});
