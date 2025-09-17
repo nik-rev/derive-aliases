@@ -80,6 +80,7 @@ use dsl::Alias;
 use proc_macro::{Delimiter, Ident, Span, TokenStream, TokenTree};
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::atomic::AtomicBool;
 use std::{collections::HashSet, fs::File, io::BufWriter, path::PathBuf, sync::LazyLock};
 
 mod alias_map;
@@ -112,6 +113,17 @@ macro_rules! write {
 #[cfg_attr(not(doc), doc(hidden))]
 #[proc_macro]
 pub fn define(derive_aliases: TokenStream) -> TokenStream {
+    if DEFINE_MACRO_CALLED.load(std::sync::atomic::Ordering::Acquire) {
+        return CompileError::new(
+            Span::call_site(),
+            "You can only call `derive_aliases::define!` at most once per crate",
+        )
+        .into_iter()
+        .collect();
+    }
+
+    DEFINE_MACRO_CALLED.store(true, std::sync::atomic::Ordering::Release);
+
     let file = File::create(&*DERIVE_ALIASES_FILE).unwrap_or_else(|err| {
         panic!(
             "failed to create file {}: {err}",
@@ -620,6 +632,9 @@ fn most_similar_alias(alias: impl AsRef<str>) -> Option<String> {
         .filter(|it| it.1 >= 0.70)
         .map(|it| it.0)
 }
+
+/// We can only call `derive_aliases::define!` once. Disallow duplicate invocations.
+static DEFINE_MACRO_CALLED: AtomicBool = AtomicBool::new(false);
 
 /// When the `derive_aliases::define!` macro is called, it processes the received
 /// `TokenStream` and then dumps the tokens into this file.
