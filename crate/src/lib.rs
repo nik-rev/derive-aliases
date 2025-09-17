@@ -77,7 +77,7 @@
 use alias_map::ALIAS_MAP;
 use codegen::CompileError;
 use dsl::Alias;
-use proc_macro::{Punct, Span, TokenStream, TokenTree};
+use proc_macro::{Span, TokenStream, TokenTree};
 use std::collections::HashSet;
 
 mod alias_map;
@@ -130,11 +130,7 @@ pub(crate) use chain;
 /// For more info, see the [crate-level](crate) documentation
 #[proc_macro_attribute]
 pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let a = expand_aliases(attr).into_iter().chain(item).collect();
-
-    // panic!("{a}");
-
-    a
+    expand_aliases(attr).into_iter().chain(item).collect()
 }
 
 /// Expand a list of derives and derive aliases into a list of derives

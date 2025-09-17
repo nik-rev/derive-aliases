@@ -133,19 +133,20 @@ pub fn cfg_std_derive_attr(
             "caller handles empty `cfg` specially, by placing them into a single TokenStream"
         ),
         [cfg] => {
-            // cfg_attr($cfg), std::derive($derives)
             chain![
                 ident("cfg_attr"),
                 group::<'('>(
-                    cfg.cfg
-                        .parse()
-                        // TODO: CompilerError with exact span information instead of panicking
-                        .expect("token stream inside of `#[cfg(...)]` is invalid")
+                    chain![
+                        cfg.cfg
+                            .parse::<TokenStream>()
+                            // TODO: CompilerError with exact span information instead of panicking
+                            .expect("token stream inside of `#[cfg(...)]` is invalid"),
+                        punct(','),
+                        std_derive(into_std_derive_arguments(derives, seen).collect())
+                    ]
+                    .collect()
                 ),
-                punct(','),
-                std_derive(into_std_derive_arguments(derives, seen).collect())
             ]
-            .collect()
         }
         [..] => {
             // cfg_attr(all($cfg1, $cfg2,)), std::derive($derives)
@@ -153,8 +154,9 @@ pub fn cfg_std_derive_attr(
                 ident("cfg_attr"),
                 group::<'('>(
                     // all($cfg1, $cfg2,)
-                    ident("all")
-                        .chain(group::<'('>(
+                    chain![
+                        ident("all"),
+                        group::<'('>(
                             cfgs.iter()
                                 .flat_map(|cfg| {
                                     cfg.cfg
@@ -165,30 +167,18 @@ pub fn cfg_std_derive_attr(
                                         .chain(punct(','))
                                 })
                                 .collect()
-                        ))
-                        .collect()
+                        ),
+                        punct(','),
+                        std_derive(into_std_derive_arguments(derives, seen).collect())
+                    ]
+                    .collect()
                 ),
-                punct(','),
-                std_derive(into_std_derive_arguments(derives, seen).collect())
             ]
-            .collect()
         }
     };
 
-    // unsafe {
-    //     foo += 1;
-    // }
-
-    // let a = attr(input);
-
-    // if unsafe { foo == 1 } {
-    //     panic!("{}", a.collect::<TokenStream>());
-    // }
-
-    attr(input)
+    attr(input.collect())
 }
-
-// static mut foo: usize = 0;
 
 /// Wrap token stream in an attribute: `#[$tt]`
 pub fn attr(tt: TokenStream) -> impl Iterator<Item = TokenTree> {

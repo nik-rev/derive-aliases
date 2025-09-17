@@ -125,9 +125,16 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
     if let Ok(file) = File::open(&doc_file_path) {
         let mut reader = BufReader::new(file);
         let mut first_line_buf = [0; FIRST_LINE.len()];
+
         let _ = reader.read_exact(&mut first_line_buf);
 
-        if first_line_buf == FIRST_LINE.as_bytes() {
+        if first_line_buf == FIRST_LINE.as_bytes()
+            // if it exists but it's empty or only made of whitespace, that's ok too
+            || first_line_buf
+                .iter()
+                .map(|b| if matches!(b, b' ' | b'\r' | b'\n') { 0 } else { *b })
+                .all(|are| are == 0)
+        {
             // The file did exist, and we were the ones who created it.
             // Let's overwrite it with empty so we can re-generate all documentation aliases which may have changed
             // since the last compilation
@@ -147,6 +154,12 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
                 file_derive_aliases.display()
             );
         }
+    }
+    if let Err(err) = File::create(&doc_file_path) {
+        panic!(
+            "failed to create {}, which would contain documentation about derive aliases: {err}",
+            doc_file_path.display()
+        );
     }
 
     let (alias_map, errors) = generate_alias_map(&content, Arc::new(file_derive_aliases));
@@ -199,8 +212,10 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
 
         // Write all the documentation for this derive alias
         for (cfgs, derives) in derives.iter() {
-            real_cfg_expansions
-                .push_str(&format!("/// {}", render_doc_comment_derive(cfgs, derives)));
+            real_cfg_expansions.push_str(&format!(
+                "/// {}\n",
+                render_doc_comment_derive(cfgs, derives)
+            ));
         }
 
         let alias = &alias.0.name;
@@ -218,7 +233,7 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
 /// Which expands to the following:
 ///
 /// ```ignore
-{real_cfg_expansions}
+{real_cfg_expansions}\
 /// struct Example;
 /// ```
 pub trait {alias} {{}}",
@@ -238,9 +253,13 @@ pub trait {alias} {{}}",
 /// - `#[cfg_attr(A), derive(A, B)]` if `cfgs` has exactly 1 item
 /// - `#[cfg_attr(all(A, B), derive(A, B))]` if `cfgs` has 2 or more items
 fn render_doc_comment_derive(cfgs: &[dsl::Cfg], derives: &[dsl::Derive]) -> String {
+    // sort them, so we will always have a reproducible order (otherwise it would be different on every compilation)
+    let mut derives_sorted = derives.iter().collect::<Vec<_>>();
+    derives_sorted.sort_unstable_by_key(|derive| derive.to_string());
+
     let derives_list = list_to_string_via_intersperse_with(
         ", ",
-        derives
+        derives_sorted
             .iter()
             .map(|derive| collapse_whitespace(&derive.to_string())),
     );
@@ -248,13 +267,13 @@ fn render_doc_comment_derive(cfgs: &[dsl::Cfg], derives: &[dsl::Derive]) -> Stri
     match cfgs {
         [] => format!("#[derive({derives_list})]"),
         [cfg] => format!(
-            "#[cfg_attr(\n    {},\n    derive({derives_list})\n)]",
+            "#[cfg_attr(\n///     {},\n///     derive({derives_list})\n/// )]",
             collapse_whitespace(&cfg.to_string())
         ),
         [..] => format!(
-            "#[cfg_attr(\n    all(\n        {}\n    ),\n    derive({derives_list})\n)]",
+            "#[cfg_attr(\n///     all(\n///         {}\n///     ),\n///     derive({derives_list})\n/// )]",
             list_to_string_via_intersperse_with(
-                ",\n        ",
+                ",\n///         ",
                 cfgs.iter().map(|cfg| collapse_whitespace(&cfg.to_string()))
             )
         ),
@@ -284,8 +303,6 @@ fn list_to_string_via_intersperse_with<T: ToString>(
     sep: &str,
     strs: impl ExactSizeIterator<Item = T>,
 ) -> String {
-    debug_assert!(strs.len() >= 2);
-
     let mut rendered = String::new();
     let len = strs.len();
     for (i, str) in strs.enumerate() {
@@ -313,6 +330,11 @@ fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
     // be expanded into a list of (..Alias OR Derive)
     let (nested_alias_map, mut errors) = parse(content, path.as_ref());
 
+    // If there are syntax errors, it doesn't make sense to proceed
+    if !errors.is_empty() {
+        return (AliasMap::default(), errors);
+    }
+
     // Let's resolve the map so each alias maps exactly to a list of derives
 
     // When we first parse all of the files, we have a deep nested, recursive tree of aliases to (aliases or derives)
@@ -329,9 +351,6 @@ fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
     // Additionally, we keep track of all `#[cfg]`s and add them to a `Vec<Cfg>`, so we end up storing
     // (Vec<Cfg>, Derive) as all of the `Cfg`s are additive
     let mut flat_alias_map = FlatAliasMap::new();
-
-    // B = #[cfg(B)] D
-    // A = #[cfg(A)] C #[cfg(A, B)] D
 
     for alias_decl in nested_alias_map.values() {
         let mut current_cfg_stack = vec![];

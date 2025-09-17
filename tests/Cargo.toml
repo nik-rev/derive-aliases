@@ -7,3 +7,10 @@ edition = "2024"
 
 [dev-dependencies]
 derive_aliases = { path = "../crate" }
+
+[features]
+default = ["serde", "arbitrary", "smallvec"]
+
+serde = []
+arbitrary = []
+smallvec = []

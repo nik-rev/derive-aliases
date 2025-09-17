@@ -1070,15 +1070,7 @@ impl Debug for AliasedItem {
 /// If `{:#}` (alternate) is specified, also includes the `#[cfg(...)]`
 impl fmt::Display for Cfg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if f.alternate() {
-            f.write_str("#[cfg(")?;
-        }
-
-        f.write_str(&self.cfg)?;
-
-        if f.alternate() {
-            f.write_str(")]")?;
-        };
+        f.write_str(&self.cfg.replacen("feature=", "feature =", usize::MAX))?;
 
         Ok(())
     }

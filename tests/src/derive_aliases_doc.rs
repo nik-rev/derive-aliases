@@ -15,7 +15,10 @@
 /// Which expands to the following:
 ///
 /// ```ignore
-/// #[derive(Copy, Clone)]
+/// #[cfg_attr(
+///     feature= "arbitrary" ,
+///     derive(Clone, Copy)
+/// )]
 /// struct Example;
 /// ```
 pub trait Copy {}
@@ -30,7 +33,10 @@ pub trait Copy {}
 /// Which expands to the following:
 ///
 /// ```ignore
-/// #[derive(PartialEq, Eq)]
+/// #[cfg_attr(
+///     feature= "arbitrary" ,
+///     derive(Eq, PartialEq)
+/// )]
 /// struct Example;
 /// ```
 pub trait Eq {}
@@ -45,7 +51,26 @@ pub trait Eq {}
 /// Which expands to the following:
 ///
 /// ```ignore
-/// #[derive(PartialOrd, Ord, PartialEq, Eq)]
+/// #[cfg_attr(
+///     all(
+///         all(feature= "serde", feature = "smallvec") ,
+///         all(feature= "smallvec", feature = "smallvec", all(feature = "smallvec"), feature = "smallvec") ,
+///         feature= "arbitrary" ,
+///         feature= "serde" 
+///     ),
+///     derive(Eq, PartialEq)
+/// )]
+/// #[cfg_attr(
+///     all(feature= "smallvec", feature = "smallvec", all(feature = "smallvec"), feature = "smallvec") ,
+///     derive(PartialOrd)
+/// )]
+/// #[cfg_attr(
+///     all(
+///         all(feature= "serde", feature = "smallvec") ,
+///         all(feature= "smallvec", feature = "smallvec", all(feature = "smallvec"), feature = "smallvec") 
+///     ),
+///     derive(Ord)
+/// )]
 /// struct Example;
 /// ```
 pub trait Ord {}
@@ -60,7 +85,10 @@ pub trait Ord {}
 /// Which expands to the following:
 ///
 /// ```ignore
-/// #[derive(PartialOrd, std::hash::Hash)]
+/// #[cfg_attr(
+///     feature= "serde" ,
+///     derive(PartialOrd, std::hash::Hash)
+/// )]
 /// struct Example;
 /// ```
 pub trait Together {}
