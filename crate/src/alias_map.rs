@@ -56,7 +56,6 @@
 //! ```
 
 use std::io::Write;
-use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -125,9 +124,8 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
     // First, let's guarantee that we're not overwriting the user's file - by checking that we were the ones that created this file
     if let Ok(file) = File::open(&doc_file_path) {
         let mut reader = BufReader::new(file);
-        let mut line = String::new();
         let mut first_line_buf = [0; FIRST_LINE.len()];
-        reader.read_exact(&mut first_line_buf);
+        let _ = reader.read_exact(&mut first_line_buf);
 
         if first_line_buf == FIRST_LINE.as_bytes() {
             // The file did exist, and we were the ones who created it.
@@ -151,7 +149,9 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
         }
     }
 
-    let mut file_derive_aliases_doc = std::fs::OpenOptions::new()
+    let (alias_map, errors) = generate_alias_map(&content, Arc::new(file_derive_aliases));
+
+    let file_derive_aliases_doc = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&doc_file_path)
@@ -164,15 +164,14 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
 
     let mut w = BufWriter::new(file_derive_aliases_doc);
 
-    let (alias_map, errors) = generate_alias_map(&content, Arc::new(file_derive_aliases));
-
     // Module documentation
     writeln!(
         w,
         "\
 {FIRST_LINE}
-//! 
-//! Derive aliases are defined in `derive_aliases.rs`
+//!
+//! Derive aliases are defined in `derive_aliases.rs`, in the same directory
+//! as the crate's `Cargo.toml`
 #![allow(warnings)]
 #![doc(hidden)]",
     );
@@ -188,22 +187,42 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
         .sort_unstable_by(|(alias_1, _), (alias_2, _)| alias_1.0.name.cmp(&alias_2.0.name));
 
     for (alias, derives) in &alias_map_sorted {
-        writeln!(
-            w,
-            "\n/// Derive alias `..{}` expands to the following derives:\n///",
-            alias.0.name
-        );
+        // Expands exactly how we really expand, with a bit of formatting
+        // Example:
+        //
+        // ```
+        // #[derive(A, B)]
+        // #[cfg_attr(A, derive(A, B))]
+        // #[cfg_attr(all(A, B), derive(A, B))]
+        // ```
+        let mut real_cfg_expansions = String::new();
 
         // Write all the documentation for this derive alias
-        for (cfgs, derive) in derives
-            .iter()
-            .flat_map(|(cfgs, derives)| derives.iter().map(move |derive| (cfgs, derive)))
-        {
-            writeln!(w, "{}", single_line_of_doc_comment_for_derive(cfgs, derive));
+        for (cfgs, derives) in derives.iter() {
+            real_cfg_expansions
+                .push_str(&format!("/// {}", render_doc_comment_derive(cfgs, derives)));
         }
 
-        // The actual dummy value we use only to attach documentation to it
-        writeln!(w, "pub trait {} {{}}", alias.0.name);
+        let alias = &alias.0.name;
+
+        writeln!(
+            w,
+            "
+/// Derive alias `..{alias}` can be used like this:
+///
+/// ```ignore
+/// #[derive(..{alias})]
+/// struct Example;
+/// ```
+///
+/// Which expands to the following:
+///
+/// ```ignore
+{real_cfg_expansions}
+/// struct Example;
+/// ```
+pub trait {alias} {{}}",
+        );
     }
 
     w.flush().unwrap_or_else(|err| panic!("failed to write file {}, which would contain documentation about derive aliases: {err}", doc_file_path.display()));
@@ -211,54 +230,79 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
     (alias_map, errors)
 });
 
-/// Hovering on aliases shows documentation for them. This function generates 1 line of such documentation
+/// Render the derive attribute depending on how many `cfg`s there are.
 ///
-/// This is the function that generates documentation
-/// for a **single** derive that comes from the expansion of an alias.
-/// The `cfgs` are the cumulative `cfg` predicates that will be rendered, if non-empty.
+/// Renders in 3 different ways:
 ///
-/// ```rs
-/// Eq = PartialEq, #[cfg(bar)] Eq;
-/// Ord = PartialOrd, Ord, #[cfg(foo)] ..Eq;
-/// ```
-///
-/// When expanding `..Ord`, we will generate *something like* the following documentation
-///
-/// ```ignore
-/// /// - [`PartialOrd`]
-/// /// - [`Ord`]
-/// /// - [`PartialEq`] when `#[cfg(foo)]`
-/// /// - [`Eq`] when `#[cfg(all(foo, bar))]`
-/// ```
-///
-/// Each bullet point corresponds to a single invocation of this function.
-fn single_line_of_doc_comment_for_derive(cfgs: &[dsl::Cfg], derive: &dsl::Derive) -> String {
-    let mut doc_line = format!("/// - [`{derive}`]");
+/// - `#[derive(A, B)]` if `cfgs` is empty
+/// - `#[cfg_attr(A), derive(A, B)]` if `cfgs` has exactly 1 item
+/// - `#[cfg_attr(all(A, B), derive(A, B))]` if `cfgs` has 2 or more items
+fn render_doc_comment_derive(cfgs: &[dsl::Cfg], derives: &[dsl::Derive]) -> String {
+    let derives_list = list_to_string_via_intersperse_with(
+        ", ",
+        derives
+            .iter()
+            .map(|derive| collapse_whitespace(&derive.to_string())),
+    );
 
-    if cfgs.len() == 1 {
-        // `#` will also render `#[cfg(...)]` attribute wrapper
-        doc_line.push_str(&format!(" when `{doc_line:#}`"));
-    } else if cfgs.len() > 2 {
-        doc_line.push_str(" when ");
-        doc_line.push_str("`#[cfg(all(");
-        for (i, cfg) in cfgs.iter().enumerate() {
-            // This renders a predicate, e.g. `feature = "serde"`
-            doc_line.push_str(&cfg.to_string());
+    match cfgs {
+        [] => format!("#[derive({derives_list})]"),
+        [cfg] => format!(
+            "#[cfg_attr(\n    {},\n    derive({derives_list})\n)]",
+            collapse_whitespace(&cfg.to_string())
+        ),
+        [..] => format!(
+            "#[cfg_attr(\n    all(\n        {}\n    ),\n    derive({derives_list})\n)]",
+            list_to_string_via_intersperse_with(
+                ",\n        ",
+                cfgs.iter().map(|cfg| collapse_whitespace(&cfg.to_string()))
+            )
+        ),
+    }
+}
 
-            let is_last = i + 1 == cfgs.len();
+/// Collapses all whitespace into a single space, so things can fit on a single line
+fn collapse_whitespace(s: &str) -> String {
+    let mut rendered = String::new();
+    let count = rendered.split_whitespace().count();
+    for (is_last, content) in s
+        .split_whitespace()
+        .enumerate()
+        .map(|(i, s)| (i == count, s))
+    {
+        rendered.push_str(content);
 
-            if !is_last {
-                // Intersperse all CFG predicates with commas, except the last one
-                //
-                // cfg, cfg2, cfg3
-                //    ^^    ^^
-                doc_line.push_str(", ");
-            }
+        if !is_last {
+            rendered.push(' ');
         }
-        doc_line.push_str("))]`");
+    }
+    rendered
+}
+
+/// Render a list of items as `item1, item2` if `sep` is a comma
+fn list_to_string_via_intersperse_with<T: ToString>(
+    sep: &str,
+    strs: impl ExactSizeIterator<Item = T>,
+) -> String {
+    debug_assert!(strs.len() >= 2);
+
+    let mut rendered = String::new();
+    let len = strs.len();
+    for (i, str) in strs.enumerate() {
+        rendered.push_str(&str.to_string());
+
+        let is_last = i + 1 == len;
+
+        if !is_last {
+            // Intersperse all CFG predicates with commas, except the last one
+            //
+            // item1, item2, item3
+            //      ^^     ^^
+            rendered.push_str(sep);
+        }
     }
 
-    doc_line
+    rendered
 }
 
 /// Create the `AliasMap`
@@ -267,7 +311,7 @@ fn single_line_of_doc_comment_for_derive(cfgs: &[dsl::Cfg], derive: &dsl::Derive
 fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
     // Recursive map of `Alias => (..Alias OR Derive)`, where `Derive` is a "leaf" but an `..Alias` can
     // be expanded into a list of (..Alias OR Derive)
-    let (nested_alias_map, mut errors) = parse(&content, &path.as_ref());
+    let (nested_alias_map, mut errors) = parse(content, path.as_ref());
 
     // Let's resolve the map so each alias maps exactly to a list of derives
 
@@ -289,7 +333,7 @@ fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
     // B = #[cfg(B)] D
     // A = #[cfg(A)] C #[cfg(A, B)] D
 
-    for (_, alias_decl) in &nested_alias_map {
+    for alias_decl in nested_alias_map.values() {
         let mut current_cfg_stack = vec![];
         let mut derives = vec![];
 
@@ -303,7 +347,7 @@ fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
             &mut derives,
             &mut errors,
             path.clone(),
-            content.as_ref(),
+            content,
             &mut alias_stack,
         );
 
@@ -342,10 +386,7 @@ fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
             // Let's remove duplicate CFGs to reduce how many tokens each invocation of `#[derive]` needs to output yet again
             cfgs.dedup();
 
-            grouped_derives
-                .entry(cfgs)
-                .or_insert_with(Vec::new)
-                .push(derive);
+            grouped_derives.entry(cfgs).or_default().push(derive);
         }
 
         alias_to_grouped_derives.insert(alias, grouped_derives);
@@ -354,12 +395,13 @@ fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
     (alias_to_grouped_derives, errors)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_derives_for_alias(
     // current alias
     alias_decl: &dsl::AliasDeclaration,
     // all aliases and their derives
     alias_map: &HashMap<dsl::Alias, dsl::AliasDeclaration>,
-    mut current_cfg_stack: &mut Vec<dsl::Cfg>,
+    current_cfg_stack: &mut Vec<dsl::Cfg>,
     // derives for the current alias
     derives: &mut Vec<(Vec<dsl::Cfg>, dsl::Derive)>,
     errors: &mut Errors,
@@ -406,7 +448,7 @@ fn resolve_derives_for_alias(
                             ),
                         },
                         file.clone(),
-                        &source,
+                        source,
                     ));
                     continue;
                 }
@@ -428,11 +470,11 @@ fn resolve_derives_for_alias(
                                 most_similar_alias(&alias_expansion.alias.0.name)
                                     .map(|f| format!("help: did you mean: {f}\n\n"))
                                     .unwrap_or_default(),
-                                format_list(alias_map.iter().map(|(a, _)| &a.0.name))
+                                format_list(alias_map.keys().map(|a| &a.0.name))
                             ),
                         },
                         file.clone(),
-                        &source,
+                        source,
                     ));
                     continue;
                 };
@@ -461,13 +503,13 @@ pub fn parse(content: &str, path: &Path) -> (HashMap<Alias, AliasDeclaration>, V
         alias_declarations: &mut HashMap<Alias, AliasDeclaration>,
         errors: &mut Vec<String>,
     ) {
-        let file = dsl::parse_single_file(&content, path);
+        let file = dsl::parse_single_file(content, path);
 
         // Add all of the syntax errors
         errors.extend(
             file.errors
                 .iter()
-                .map(|error| render_error(&error, file.span.file.clone(), content)),
+                .map(|error| render_error(error, file.span.file.clone(), content)),
         );
 
         for stmt in file.stmts {
@@ -630,14 +672,14 @@ mod tests {
         pub fn cfg(content: &str) -> Cfg {
             Cfg {
                 span: span(),
-                keyword: dsl::token::Cfg(span()),
+                _keyword: dsl::token::Cfg(span()),
                 cfg: content.to_string(),
             }
         }
 
         pub fn derive(name: &str) -> Derive {
             Derive {
-                span: dummy::span(),
+                _span: dummy::span(),
                 leading_colon: None,
                 components: dsl::Separated {
                     first: Ident {
@@ -646,44 +688,6 @@ mod tests {
                     },
                     items: Vec::new(),
                 },
-            }
-        }
-
-        pub fn alias_decl(
-            name: &str,
-            items: Vec<(Option<Cfg>, dsl::AliasedItem)>,
-        ) -> dsl::AliasDeclaration {
-            let (first_cfg, first_item) = items.clone().into_iter().next().unwrap();
-            let mut separated_items = Vec::new();
-
-            for (cfg, item) in items.into_iter().skip(1) {
-                separated_items.push((
-                    dsl::token::Comma(dummy::span()),
-                    dsl::Aliased {
-                        span: dummy::span(),
-                        cfg,
-                        item,
-                    },
-                ));
-            }
-
-            dsl::AliasDeclaration {
-                span: dummy::span(),
-                cfg: None,
-                alias: Alias(Ident {
-                    name: name.to_string(),
-                    span: dummy::span(),
-                }),
-                eq_token: dsl::token::Eq(dummy::span()),
-                aliased: dsl::Separated {
-                    first: dsl::Aliased {
-                        span: dummy::span(),
-                        cfg: first_cfg,
-                        item: first_item,
-                    },
-                    items: separated_items,
-                },
-                trailing_comma: None,
             }
         }
     }

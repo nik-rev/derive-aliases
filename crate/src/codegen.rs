@@ -5,7 +5,7 @@
 
 use crate::{chain, dsl};
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
-use std::{collections::HashSet, iter};
+use std::collections::HashSet;
 
 /// Create a dummy import like this:
 ///
@@ -96,29 +96,6 @@ impl IntoIterator for CompileError {
     }
 }
 
-/// Generate `#[doc = $doc]`
-pub fn doc_comment(doc: &str) -> impl Iterator<Item = TokenTree> {
-    attr(
-        chain![
-            ident("doc"),
-            punct('='),
-            [TokenTree::Literal(Literal::string(doc.as_ref()))]
-        ]
-        .collect(),
-    )
-}
-
-/// Generate `#[$attr($inner)]`
-pub fn attr_with_inner(attr: &str, inner: &str) -> impl Iterator<Item = TokenTree> {
-    self::attr(
-        // $attr
-        ident(attr.as_ref())
-            // $inner
-            .chain(group::<'('>(ident(inner.as_ref()).collect()))
-            .collect(),
-    )
-}
-
 /// For a single derive, generate `#[std::derive(..)]` with `#[cfg_attr(.., std::derive(..))]` if there is at least 1 configuration predicate
 ///
 /// Generate one of:
@@ -166,7 +143,7 @@ pub fn cfg_std_derive_attr(
                         .expect("token stream inside of `#[cfg(...)]` is invalid")
                 ),
                 punct(','),
-                std_derive(into_std_derive_arguments(cfgs, derives, seen).collect())
+                std_derive(into_std_derive_arguments(derives, seen).collect())
             ]
             .collect()
         }
@@ -192,7 +169,7 @@ pub fn cfg_std_derive_attr(
                         .collect()
                 ),
                 punct(','),
-                std_derive(into_std_derive_arguments(cfgs, derives, seen).collect())
+                std_derive(into_std_derive_arguments(derives, seen).collect())
             ]
             .collect()
         }
@@ -220,7 +197,6 @@ pub fn attr(tt: TokenStream) -> impl Iterator<Item = TokenTree> {
 
 /// Resolve the derive arguments into something that can be passed into `std::derive(..)`
 pub fn into_std_derive_arguments(
-    cfgs: &[dsl::Cfg],
     derives: &[dsl::Derive],
     seen: &mut HashSet<dsl::Derive>,
 ) -> impl Iterator<Item = TokenTree> {

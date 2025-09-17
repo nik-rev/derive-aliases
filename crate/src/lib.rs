@@ -1,4 +1,3 @@
-#![allow(warnings)]
 //! `#[derive]` aliases for reducing code boilerplate
 //!
 //! Aliases are defined in a special file `derive_aliases.rs`, located next to your **crate**'s `Cargo.toml`:
@@ -78,14 +77,8 @@
 use alias_map::ALIAS_MAP;
 use codegen::CompileError;
 use dsl::Alias;
-use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
-use std::{
-    collections::{HashMap, HashSet},
-    io::Chain,
-    iter,
-    path::Path,
-    sync::{atomic::AtomicUsize, LazyLock},
-};
+use proc_macro::{Span, TokenStream, TokenTree};
+use std::collections::HashSet;
 
 mod alias_map;
 mod codegen;
@@ -302,7 +295,6 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
                 // Doing it this way is necessary as we'll append regular derives that don't come from an alias
                 // expansion into the same TokenStream. Also, it reduces how many tokens we output which makes the macro faster
                 no_cfg_derives.extend(codegen::into_std_derive_arguments(
-                    cfg,
                     derives,
                     &mut seen_expanded,
                 ));
@@ -364,6 +356,3 @@ fn most_similar_alias(alias: impl AsRef<str>) -> Option<String> {
         .filter(|it| it.1 >= 0.70)
         .map(|it| it.0)
 }
-
-/// How many aliases were generated
-static ALIASES_OUTPUTTED: AtomicUsize = AtomicUsize::new(0);

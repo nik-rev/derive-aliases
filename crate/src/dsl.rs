@@ -80,7 +80,7 @@ pub struct Ident {
 #[derive(Clone)]
 pub struct Derive {
     /// Span of the entire derive
-    pub span: Span,
+    pub _span: Span,
     /// `Some(span)` if we have the first `"::"`. It is optional
     pub leading_colon: Option<token::Colon>,
     /// Components, separated by `"::"`
@@ -104,9 +104,9 @@ impl Alias {
 #[derive(Clone)]
 pub struct AliasExpansion {
     /// first `.`
-    pub dot_1: token::Dot,
+    pub _dot_1: token::Dot,
     /// second `.`
-    pub dot_2: token::Dot,
+    pub _dot_2: token::Dot,
     /// Alias e.g. `Alias`
     pub alias: Alias,
 }
@@ -129,7 +129,7 @@ pub struct Cfg {
     /// Span of the entire configuration predicate
     pub span: Span,
     /// The `"cfg"` keyword
-    pub keyword: token::Cfg,
+    pub _keyword: token::Cfg,
     /// Content inside `#[cfg(<-- here -->)]`
     pub cfg: String,
 }
@@ -138,7 +138,7 @@ pub struct Cfg {
 #[derive(Debug, Clone)]
 pub struct Aliased {
     /// Span of the aliased contents
-    pub span: Span,
+    pub _span: Span,
     /// `#[cfg(...)]` that must be activated
     pub cfg: Option<Cfg>,
     /// The item that is aliased
@@ -161,11 +161,11 @@ pub struct AliasDeclaration {
     /// Name of the alias we are declaring
     pub alias: Alias,
     /// `"="` token
-    pub eq_token: token::Eq,
+    pub _eq_token: token::Eq,
     /// All aliased items
     pub aliased: Separated<Aliased, token::Comma>,
     /// Trailing `","` after the aliased
-    pub trailing_comma: Option<token::Comma>,
+    pub _trailing_comma: Option<token::Comma>,
 }
 
 /// `"use"` with a string to inline that file's contents
@@ -174,13 +174,14 @@ pub struct Import {
     /// Location of the import statement
     pub span: Span,
     /// The `"use"`
-    pub use_token: token::Use,
+    pub _use_token: token::Use,
     /// Path that we are importing
     pub path: Arc<PathBuf>,
 }
 
 /// A single statemen
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant, reason = "it doesn't matter")]
 pub enum Stmt {
     /// Alias declaration
     AliasDeclaration(AliasDeclaration),
@@ -522,7 +523,7 @@ impl<'a> Parser<'a> {
                             let full_span = self.span(start_offset, end_offset);
                             return Some(Ok(Cfg {
                                 span: full_span,
-                                keyword: token::Cfg(keyword_span),
+                                _keyword: token::Cfg(keyword_span),
                                 cfg: cfg_content,
                             }));
                         } else {
@@ -622,7 +623,7 @@ impl<'a> Parser<'a> {
 
         Ok(Import {
             span: full_span,
-            use_token: token::Use(use_token_span),
+            _use_token: token::Use(use_token_span),
             path: Arc::new(path_buf),
         })
     }
@@ -678,9 +679,9 @@ impl<'a> Parser<'a> {
             cfg,
             span: full_span,
             alias: Alias(alias),
-            eq_token,
+            _eq_token: eq_token,
             aliased,
-            trailing_comma,
+            _trailing_comma: trailing_comma,
         })
     }
 
@@ -720,7 +721,7 @@ impl<'a> Parser<'a> {
         let full_span = self.span(start_offset, end_offset);
 
         Ok(Aliased {
-            span: full_span,
+            _span: full_span,
             cfg,
             item,
         })
@@ -741,8 +742,8 @@ impl<'a> Parser<'a> {
             let alias_ident = self.parse_ident()?;
 
             Ok(AliasedItem::AliasExpansion(AliasExpansion {
-                dot_1: token::Dot(self.span(start_offset, start_offset + 1)),
-                dot_2: token::Dot(self.span(start_offset + 1, start_offset + 2)),
+                _dot_1: token::Dot(self.span(start_offset, start_offset + 1)),
+                _dot_2: token::Dot(self.span(start_offset + 1, start_offset + 2)),
                 alias: Alias(alias_ident),
             }))
         } else {
@@ -806,7 +807,7 @@ impl<'a> Parser<'a> {
         let full_span = self.span(start_offset, end_offset);
 
         Ok(Derive {
-            span: full_span,
+            _span: full_span,
             leading_colon,
             components: Separated {
                 first: first_ident,
@@ -889,7 +890,6 @@ pub fn render_error(error: &ParseError, file: Arc<PathBuf>, source: &str) -> Str
 }
 
 pub mod token {
-    use super::Span;
     use std::fmt;
 
     macro_rules! tokens {
@@ -897,10 +897,13 @@ pub mod token {
             $(
                 #[derive(Clone)]
                 #[doc = concat!("`\"", $token, "\"`")]
-                pub struct $Token(pub super::Span);
+                pub struct $Token(
+                    #[allow(dead_code)]
+                    pub super::Span
+                );
 
                 impl PartialEq for $Token {
-                    fn eq(&self, other: &$Token) -> bool {
+                    fn eq(&self, _other: &$Token) -> bool {
                         true
                     }
                 }
@@ -945,8 +948,8 @@ impl<T: fmt::Display, Sep: fmt::Display> fmt::Display for Separated<T, Sep> {
         T::fmt(&self.first, f)?;
 
         for (sep, t) in &self.items {
-            Sep::fmt(&sep, f)?;
-            T::fmt(&t, f)?;
+            Sep::fmt(sep, f)?;
+            T::fmt(t, f)?;
         }
 
         Ok(())
@@ -956,7 +959,7 @@ impl<T: fmt::Display, Sep: fmt::Display> fmt::Display for Separated<T, Sep> {
 impl<T: fmt::Display, Sep: fmt::Display> fmt::Debug for Separated<T, Sep> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_char('"')?;
-        <Self as fmt::Display>::fmt(&self, f)?;
+        <Self as fmt::Display>::fmt(self, f)?;
         f.write_char('"')
     }
 }
@@ -1017,7 +1020,7 @@ impl Eq for Derive {}
 impl Display for Derive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.leading_colon.is_some() {
-            f.write_str("::");
+            f.write_str("::")?;
         }
 
         Display::fmt(&self.components, f)?;
@@ -1028,7 +1031,7 @@ impl Display for Derive {
 
 impl Debug for Derive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <Self as Display>::fmt(&self, f)
+        <Self as Display>::fmt(self, f)
     }
 }
 
@@ -1083,7 +1086,7 @@ impl fmt::Display for Cfg {
 
 impl Debug for Cfg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <Cfg as Display>::fmt(&self, f)
+        <Cfg as Display>::fmt(self, f)
     }
 }
 
