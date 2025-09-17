@@ -284,6 +284,11 @@ pub fn ident(ident: &str) -> impl Iterator<Item = TokenTree> {
     [TokenTree::Ident(Ident::new(ident, Span::call_site()))].into_iter()
 }
 
+/// Turn `ident` into a Rust identifier, with the given `span`
+pub fn ident_spanned(ident: &str, span: Span) -> impl Iterator<Item = TokenTree> {
+    [TokenTree::Ident(Ident::new(ident, span))].into_iter()
+}
+
 /// Turn `ch` into a Rust punctuation
 pub fn punct(ch: char) -> impl Iterator<Item = TokenTree> {
     [TokenTree::Punct(Punct::new(ch, Spacing::Joint))].into_iter()

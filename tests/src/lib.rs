@@ -1,42 +1,54 @@
-#![cfg(test)]
-
 #[macro_use]
 extern crate derive_aliases;
 
-mod derive_aliases_doc;
+// mod derive_aliases_doc;
 
-macro_rules! implements_traits {
-    ($name:ident #[$($derive:ident)::*($($input:tt)*)] => $($($segment:ident)::*),*) => {
-        mod $name {
-            #[$($derive)::*($($input)*)]
-            pub struct A(());
-        }
+derive_aliases::define! {
+    // #[cfg(feature = "arbitrary")]
+    // Copy =
+    //     #[cfg(feature = "arbitrary")]
+    //     Copy,
+    //     #[cfg(feature = "arbitrary")]
+    //     Clone;
 
-        // HACK: since we can't use `+` as repetition separator
-        #[allow(warnings, reason = "only for type check")]
-        fn $name<A: $($($segment)::* +)* Sized>() {
-            $name::<$name::A>();
-        }
-    };
+    Bar = ..Eq;
+    Eq = PartialEq, Eq, std::hash::Hash, Eq;
+    Foo = ..Eq, Eq, ..Eq;
 }
 
-// Simple alias
-implements_traits!(a #[derive(..Eq)] => Eq, PartialEq);
+#[cfg(feature = "arbitrary")]
+struct X;
+// macro_rules! implements_traits {
+//     ($name:ident #[$($derive:ident)::*($($input:tt)*)] => $($($segment:ident)::*),*) => {
+//         mod $name {
+//             #[$($derive)::*($($input)*)]
+//             pub struct A(());
+//         }
 
-// Alias with custom type
-implements_traits!(b #[derive(..Copy, std::hash::Hash)] => Copy, Clone, std::hash::Hash);
+//         // HACK: since we can't use `+` as repetition separator
+//         #[allow(warnings, reason = "only for type check")]
+//         fn $name<A: $($($segment)::* +)* Sized>() {
+//             $name::<$name::A>();
+//         }
+//     };
+// }
 
-// 2 aliases, and custom derive in-between them
-implements_traits!(c #[derive(..Eq, std::hash::Hash, ..Copy)] => Eq, PartialEq, std::hash::Hash, Copy, Clone);
+// // Simple alias
+// implements_traits!(a #[derive(..Eq)] => Eq, PartialEq);
 
-// Removes duplicates
-//
-// Here, there will be 2 of `Hash` and 2 of `PartialOrd`
-implements_traits!(d #[derive(..Ord, ..Together)] => Ord, PartialOrd, Eq, PartialEq, std::hash::Hash);
+// // Alias with custom type
+// implements_traits!(b #[derive(..Copy, std::hash::Hash)] => Copy, Clone, std::hash::Hash);
 
-// Works with full path reference
-implements_traits!(e #[derive_aliases::derive(..Eq)] => Eq, PartialEq);
+// // 2 aliases, and custom derive in-between them
+// implements_traits!(c #[derive(..Eq, std::hash::Hash, ..Copy)] => Eq, PartialEq, std::hash::Hash, Copy, Clone);
 
+// // Removes duplicates
+// //
+// // Here, there will be 2 of `Hash` and 2 of `PartialOrd`
+// implements_traits!(d #[derive(..Ord, ..Together)] => Ord, PartialOrd, Eq, PartialEq, std::hash::Hash);
+
+// // Works with full path reference
+// implements_traits!(e #[derive_aliases::derive(..Eq)] => Eq, PartialEq);
 #[cfg(test)]
 #[test]
 fn it_compiles() {}

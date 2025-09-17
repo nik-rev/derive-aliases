@@ -61,15 +61,15 @@ pub trait Eq {}
 ///     derive(Eq, PartialEq)
 /// )]
 /// #[cfg_attr(
-///     all(feature= "smallvec", feature = "smallvec", all(feature = "smallvec"), feature = "smallvec") ,
-///     derive(PartialOrd)
-/// )]
-/// #[cfg_attr(
 ///     all(
 ///         all(feature= "serde", feature = "smallvec") ,
 ///         all(feature= "smallvec", feature = "smallvec", all(feature = "smallvec"), feature = "smallvec") 
 ///     ),
 ///     derive(Ord)
+/// )]
+/// #[cfg_attr(
+///     all(feature= "smallvec", feature = "smallvec", all(feature = "smallvec"), feature = "smallvec") ,
+///     derive(PartialOrd)
 /// )]
 /// struct Example;
 /// ```
