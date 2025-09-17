@@ -77,7 +77,7 @@
 use alias_map::ALIAS_MAP;
 use codegen::CompileError;
 use dsl::Alias;
-use proc_macro::{Span, TokenStream, TokenTree};
+use proc_macro::{Punct, Span, TokenStream, TokenTree};
 use std::collections::HashSet;
 
 mod alias_map;
@@ -130,7 +130,11 @@ pub(crate) use chain;
 /// For more info, see the [crate-level](crate) documentation
 #[proc_macro_attribute]
 pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
-    expand_aliases(attr).into_iter().chain(item).collect()
+    let a = expand_aliases(attr).into_iter().chain(item).collect();
+
+    // panic!("{a}");
+
+    a
 }
 
 /// Expand a list of derives and derive aliases into a list of derives
@@ -224,25 +228,43 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
 
     while let Some(tt) = input.next() {
         // We manually have to handle all `..Alias`es, but regular derives will be passed to `std::derive` verbatim
-        let TokenTree::Punct(ref dot) = tt else {
+        let TokenTree::Punct(ref punct) = tt else {
             no_cfg_derives.extend([tt]);
             continue;
         };
 
-        if dot.as_char() != '.' {
-            no_cfg_derives.extend([tt]);
+        if punct.as_char() != '.' {
+            // Do not add leading commas.
+            //
+            // This can happen when there is an alias at the beginning, but it is removed because it has `cfg`s
+            //
+            // e.g. from this:
+            //
+            // #[derive(..Eq, PartialEq)]
+            //
+            // To this:
+            //
+            // #[cfg_attr(feature = "eq", Eq, PartialEq)]
+            // #[derive(, PartialOrd)]
+            //          ^ this comma still exists, must be removed
+            //
+            if punct.as_char() == ',' && no_cfg_derives.is_empty() {
+                // skip
+            } else {
+                no_cfg_derives.extend([tt]);
+            }
             continue;
         }
 
-        let Some(dot_dot) = input.next_if(|tt| {
-            if let TokenTree::Punct(dot) = tt {
-                dot.as_char() == '.'
+        let Some(punct_next) = input.next_if(|tt| {
+            if let TokenTree::Punct(punct) = tt {
+                punct.as_char() == '.'
             } else {
                 false
             }
         }) else {
             compile_errors.extend(CompileError::new(
-                dot.span(),
+                punct.span(),
                 "after `.` we expect `.` followed by a derive alias, for example: `..Alias`",
             ));
             continue;
@@ -253,7 +275,7 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
         // consume the identifier `Alias`
         let Some(TokenTree::Ident(alias)) = input.next() else {
             compile_errors.extend(CompileError::new(
-                dot_dot.span(),
+                punct_next.span(),
                 "after `..` we expect a derive alias, for example: `..Alias`",
             ));
             continue;
@@ -312,13 +334,18 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
         dummy_imports_for_docs.extend(codegen::dummy_import(alias));
     }
 
-    chain![
-        dummy_imports_for_docs,
-        cfg_attr_derives,
-        codegen::attr(codegen::std_derive(no_cfg_derives).collect()),
-        compile_errors,
-    ]
-    .collect()
+    // We split into 2 parts because we don't want to generate a `#[std::derive(..)]` if there are no non-cfg derives
+    if no_cfg_derives.is_empty() {
+        chain![dummy_imports_for_docs, cfg_attr_derives, compile_errors].collect()
+    } else {
+        chain![
+            dummy_imports_for_docs,
+            cfg_attr_derives,
+            codegen::attr(codegen::std_derive(no_cfg_derives).collect()),
+            compile_errors
+        ]
+        .collect()
+    }
 }
 
 /// Intersperse list with commas and show it as a string
