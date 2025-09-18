@@ -24,6 +24,8 @@
 // }
 
 derive_aliases::define! {
+    // extern use foo::bar;
+
     Eq = PartialEq, Eq;
 
     Ord = PartialOrd, Ord, ..Eq;
@@ -31,23 +33,23 @@ derive_aliases::define! {
     Everything = ::std::hash::Hash, ..Ord, Copy, Clone, Default;
 }
 
-// macro_rules! implements_traits {
-//     ($name:ident #[$($input:tt)*] => $($($segment:ident)::*),*) => {
-//         mod $name {
-//             #[derive_aliases::derive($($input)*)]
-//             pub struct A(());
-//         }
+macro_rules! implements_traits {
+    ($name:ident #[$($input:tt)*] => $($($segment:ident)::*),*) => {
+        mod $name {
+            #[derive_aliases::derive($($input)*)]
+            pub struct A(());
+        }
 
-//         // HACK: since we can't use `+` as repetition separator
-//         #[allow(warnings, reason = "only for type check")]
-//         fn $name<A: $($($segment)::* +)* Sized>() {
-//             $name::<$name::A>();
-//         }
-//     };
-// }
+        // HACK: since we can't use `+` as repetition separator
+        #[allow(warnings, reason = "only for type check")]
+        fn $name<A: $($($segment)::* +)* Sized>() {
+            $name::<$name::A>();
+        }
+    };
+}
 
-// // Simple alias
-// implements_traits!(a #[..Eq] => Eq, PartialEq);
+// Simple alias
+implements_traits!(a #[..Eq] => Eq, PartialEq);
 
 // // Alias with custom type
 // implements_traits!(b #[..Copy, std::hash::Hash] => Copy, Clone, std::hash::Hash);

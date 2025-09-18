@@ -304,3 +304,15 @@ pub fn ident(ident: impl AsRef<str>, span: Span) -> impl Iterator<Item = TokenTr
 pub fn punct(ch: char) -> impl Iterator<Item = TokenTree> {
     [TokenTree::Punct(Punct::new(ch, Spacing::Joint))].into_iter()
 }
+
+/// Generate a single line of a documentation comment, `#[doc = $comment]`
+pub fn doc_comment(comment: &str) -> impl Iterator<Item = TokenTree> {
+    attr(
+        chain![
+            ident("doc", Span::call_site()),
+            punct('='),
+            [TokenTree::Literal(Literal::string(comment))],
+        ]
+        .collect(),
+    )
+}

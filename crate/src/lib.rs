@@ -75,13 +75,12 @@
 //! ```
 
 use alias_map::ALIAS_MAP;
-use codegen::{punct, use_underscore_keep_span, CompileError};
+use codegen::{doc_comment, punct, use_underscore_keep_span, CompileError};
 use dsl::Alias;
 use proc_macro::{Delimiter, Span, TokenStream, TokenTree};
-use std::collections::HashMap;
+use std::borrow::Cow;
 use std::io::Write;
 use std::iter::{self, once};
-use std::sync::atomic::AtomicBool;
 use std::{collections::HashSet, fs::File, io::BufWriter, path::PathBuf, sync::LazyLock};
 
 mod alias_map;
@@ -137,6 +136,7 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
             DERIVE_ALIASES_FILE.display()
         )
     });
+
     let mut w = BufWriter::new(file);
 
     let mut tts = derive_aliases.into_iter().peekable();
@@ -259,6 +259,45 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
                     //
                     Some(TokenTree::Punct(punct)) if punct == '=' => {
                         let ident_string = ident.to_string();
+
+                        // generate documentation for this alias
+                        if let Some((alias_map, _errors)) = ALIAS_MAP.get() {
+                            for (alias, derives) in alias_map {
+                                let alias = &alias.0.name;
+
+                                [
+                                    &format!("Derive alias `..{alias}` can be used like this:"),
+                                    "",
+                                    "```ignore",
+                                    &format!("#[derive(..{alias})]"),
+                                    "struct Example;",
+                                    "```",
+                                    "",
+                                    "Which expands to the following:",
+                                    "",
+                                    "```ignore",
+                                ]
+                                .iter()
+                                .for_each(|s| {
+                                    doc_tokens.extend(doc_comment(s));
+                                });
+
+                                // Example of what this loop might generate:
+                                //
+                                // ```
+                                // #[derive(A, B)]
+                                // #[cfg_attr(A, derive(A, B))]
+                                // #[cfg_attr(all(A, B), derive(A, B))]
+                                // ```
+                                for (cfgs, derives) in derives.iter() {
+                                    doc_tokens.extend(codegen::doc_comment(
+                                        &alias_map::render_doc_comment_derive(cfgs, derives),
+                                    ));
+                                }
+
+                                doc_tokens.extend(doc_comment("```"));
+                            }
+                        }
 
                         // pub mod Alias {}
                         doc_tokens.extend(chain![
@@ -421,36 +460,37 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
                 // Alias = Foo, ..Another
                 //               ^ we are here
                 //                ^^^^^^^ then the next identifier must be an alias Usage site
-                if let Some(TokenTree::Ident(alias_ident)) = tts.next() {
-                    match tts.next() {
-                        Some(TokenTree::Punct(punct)) if punct == ';' || punct == ',' => {
-                            // ok
-                        }
-                        _ => errors.extend(CompileError::new(
-                            alias_ident.span(),
-                            "expected `;` or `,` after this alias",
-                        )),
-                    }
-
-                    // When the user hovers over `..Another`, we want to display documentation
-                    // of the alias and what it expands to. Basically, same as if we hovered over
-                    // the definition
-                    //
-                    // pub use Alias as _;
-                    //         ^^^^^ the span that we will set it to
-                    doc_tokens.extend(chain![
-                        codegen::ident("pub", alias_ident.span()),
-                        codegen::ident("use", alias_ident.span()),
-                        codegen::ident(alias_ident.to_string(), alias_ident.span()),
-                        codegen::ident("as", alias_ident.span()),
-                        codegen::ident("_", alias_ident.span()),
-                        punct(';'),
-                    ]);
-
-                    write!(w, "{alias_ident}");
-                } else {
+                let Some(TokenTree::Ident(alias_ident)) = tts.next() else {
                     errors.extend(CompileError::new(dot_dot.span(), "expected name of alias after `..` to spread an alias: `..Alias` into derives"));
+                    continue;
+                };
+
+                match tts.next() {
+                    Some(TokenTree::Punct(punct)) if punct == ';' || punct == ',' => {
+                        // ok
+                    }
+                    _ => errors.extend(CompileError::new(
+                        alias_ident.span(),
+                        "expected `;` or `,` after this alias",
+                    )),
                 }
+
+                // When the user hovers over `..Another`, we want to display documentation
+                // of the alias and what it expands to. Basically, same as if we hovered over
+                // the definition
+                //
+                // pub use Alias as _;
+                //         ^^^^^ the span that we will set it to
+                doc_tokens.extend(chain![
+                    codegen::ident("pub", alias_ident.span()),
+                    codegen::ident("use", alias_ident.span()),
+                    codegen::ident(alias_ident.to_string(), alias_ident.span()),
+                    codegen::ident("as", alias_ident.span()),
+                    codegen::ident("_", alias_ident.span()),
+                    punct(';'),
+                ]);
+
+                write!(w, "{alias_ident}");
             }
             unexpected => {
                 errors.extend(CompileError::new(unexpected.span(), "unexpected token"));
@@ -458,7 +498,7 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
         }
     }
 
-    // Write to the file
+    // Write to the derive aliases file
     w.flush().unwrap();
 
     TokenStream::from_iter(chain![
@@ -597,7 +637,11 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
     // and rust-analyzer allows to continue us to work with other derives - even though we may have syntax errors somewhere
     let mut compile_errors = TokenStream::new();
 
-    let (alias_map, errors) = &*ALIAS_MAP;
+    let (alias_map, errors) = ALIAS_MAP.get_or_init(|| {
+        let content = std::fs::read_to_string(&*crate::DERIVE_ALIASES_FILE).unwrap();
+
+        alias_map::generate_alias_map(&content, std::sync::Arc::new(PathBuf::new()))
+    });
 
     // Report all parse errors as compile errors
     compile_errors.extend(
@@ -760,24 +804,25 @@ fn format_list<'a>(list: impl IntoIterator<Item = &'a String>) -> String {
 }
 
 /// Used in error messages to make good suggestions
-fn most_similar_alias(alias: impl AsRef<str>) -> Option<String> {
-    ALIAS_MAP
-        .0
-        .keys()
-        .map(|it| {
-            (
-                it.0.name.clone(),
-                strsim::normalized_damerau_levenshtein(&it.0.name, alias.as_ref()),
-            )
-        })
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        // if the 2 strings are not that similar, we don't have the most similar alias
-        //
-        // e.g. if we have "Foo", "Bar" and we input "Fooo" the most similar will be "Foo".
-        // If we remove "Foo", the most similar will be "Bar". But "Foo" and "Bar" are not similar at all, so
-        // we just ignore if we can't find above a certain similarity threshold
-        .filter(|it| it.1 >= 0.70)
-        .map(|it| it.0)
+fn most_similar_alias(_alias: impl AsRef<str>) -> Option<String> {
+    None
+    // ALIAS_MAP
+    //     .0
+    //     .keys()
+    //     .map(|it| {
+    //         (
+    //             it.0.name.clone(),
+    //             strsim::normalized_damerau_levenshtein(&it.0.name, alias.as_ref()),
+    //         )
+    //     })
+    //     .max_by(|a, b| a.1.total_cmp(&b.1))
+    //     // if the 2 strings are not that similar, we don't have the most similar alias
+    //     //
+    //     // e.g. if we have "Foo", "Bar" and we input "Fooo" the most similar will be "Foo".
+    //     // If we remove "Foo", the most similar will be "Bar". But "Foo" and "Bar" are not similar at all, so
+    //     // we just ignore if we can't find above a certain similarity threshold
+    //     .filter(|it| it.1 >= 0.70)
+    //     .map(|it| it.0)
 }
 
 /// When the `derive_aliases::define!` macro is called, it processes the received

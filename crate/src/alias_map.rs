@@ -59,10 +59,14 @@ use std::{
     collections::HashMap,
     iter,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock},
+    sync::{Arc, LazyLock, OnceLock},
 };
 
+use proc_macro::{Literal, Span, TokenStream, TokenTree};
+
 use crate::{
+    chain,
+    codegen::{self, attr, punct},
     dsl::{self, render_error, Alias, AliasDeclaration, ParseError, Stmt},
     format_list, most_similar_alias,
 };
@@ -72,102 +76,88 @@ type FlatAliasMap = HashMap<dsl::Alias, Vec<(Vec<dsl::Cfg>, dsl::Derive)>>;
 pub type AliasMap = HashMap<dsl::Alias, DerivesGroupedByCfgs>;
 type Errors = Vec<String>;
 
-const DOC_FILE: &str = "derive_aliases_doc.rs";
-
-macro_rules! writeln {
-    ($($tt:tt)*) => {
-        std::writeln!($($tt)*).expect("won't happen")
-    };
-}
-
 /// Map from `Alias => Vec<Derive>`, where `Alias` expands to a bunch of derive macros (represented as plain strings).
 ///
 /// We don't store the `TokenTree`s directly because they are `!Sync`
-pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
-    let content = std::fs::read_to_string(&*crate::DERIVE_ALIASES_FILE).unwrap();
+pub static ALIAS_MAP: OnceLock<(AliasMap, Errors)> = OnceLock::new();
 
-    let (alias_map, errors) = generate_alias_map(&content, Arc::new(PathBuf::new()));
+//     let file_derive_aliases_doc = std::fs::OpenOptions::new()
+//         .create(true)
+//         .append(true)
+//         .open(&doc_file_path)
+//         .unwrap_or_else(|err| {
+//             panic!(
+//                 "failed to open file {} which would document derive aliases: {err}",
+//                 doc_file_path.display()
+//             )
+//         });
 
-    //     let file_derive_aliases_doc = std::fs::OpenOptions::new()
-    //         .create(true)
-    //         .append(true)
-    //         .open(&doc_file_path)
-    //         .unwrap_or_else(|err| {
-    //             panic!(
-    //                 "failed to open file {} which would document derive aliases: {err}",
-    //                 doc_file_path.display()
-    //             )
-    //         });
+//     let mut w = BufWriter::new(file_derive_aliases_doc);
 
-    //     let mut w = BufWriter::new(file_derive_aliases_doc);
+//     // Module documentation
+//     writeln!(
+//         w,
+//         "\
+// {FIRST_LINE}
+// //!
+// //! Derive aliases are defined in `derive_aliases.rs`, in the same directory
+// //! as the crate's `Cargo.toml`
+// #![allow(warnings)]
+// #![doc(hidden)]",
+//     );
 
-    //     // Module documentation
-    //     writeln!(
-    //         w,
-    //         "\
-    // {FIRST_LINE}
-    // //!
-    // //! Derive aliases are defined in `derive_aliases.rs`, in the same directory
-    // //! as the crate's `Cargo.toml`
-    // #![allow(warnings)]
-    // #![doc(hidden)]",
-    //     );
+//     // We want our data structure but sorted:
+//     //
+//     // - When re-arranging aliases in the `derive_aliases.rs` file
+//     //   we don't want to be forced to write the `derive_aliases_doc.rs` file again.
+//     // - If we don't do this, each compilation session will write the file again and again
+//     //   with a different order
+//     let mut alias_map_sorted = alias_map.iter().collect::<Vec<_>>();
+//     alias_map_sorted
+//         .sort_unstable_by(|(alias_1, _), (alias_2, _)| alias_1.0.name.cmp(&alias_2.0.name));
 
-    //     // We want our data structure but sorted:
-    //     //
-    //     // - When re-arranging aliases in the `derive_aliases.rs` file
-    //     //   we don't want to be forced to write the `derive_aliases_doc.rs` file again.
-    //     // - If we don't do this, each compilation session will write the file again and again
-    //     //   with a different order
-    //     let mut alias_map_sorted = alias_map.iter().collect::<Vec<_>>();
-    //     alias_map_sorted
-    //         .sort_unstable_by(|(alias_1, _), (alias_2, _)| alias_1.0.name.cmp(&alias_2.0.name));
+//     for (alias, derives) in &alias_map_sorted {
+//         // Expands exactly how we really expand, with a bit of formatting
+//         // Example:
+//         //
+//         // ```
+//         // #[derive(A, B)]
+//         // #[cfg_attr(A, derive(A, B))]
+//         // #[cfg_attr(all(A, B), derive(A, B))]
+//         // ```
+//         let mut real_cfg_expansions = String::new();
 
-    //     for (alias, derives) in &alias_map_sorted {
-    //         // Expands exactly how we really expand, with a bit of formatting
-    //         // Example:
-    //         //
-    //         // ```
-    //         // #[derive(A, B)]
-    //         // #[cfg_attr(A, derive(A, B))]
-    //         // #[cfg_attr(all(A, B), derive(A, B))]
-    //         // ```
-    //         let mut real_cfg_expansions = String::new();
+//         // Write all the documentation for this derive alias
+//         for (cfgs, derives) in derives.iter() {
+//             real_cfg_expansions.push_str(&format!(
+//                 "/// {}\n",
+//                 render_doc_comment_derive(cfgs, derives)
+//             ));
+//         }
 
-    //         // Write all the documentation for this derive alias
-    //         for (cfgs, derives) in derives.iter() {
-    //             real_cfg_expansions.push_str(&format!(
-    //                 "/// {}\n",
-    //                 render_doc_comment_derive(cfgs, derives)
-    //             ));
-    //         }
+//         let alias = &alias.0.name;
 
-    //         let alias = &alias.0.name;
+//         writeln!(
+//             w,
+//             "
+// /// Derive alias `..{alias}` can be used like this:
+// ///
+// /// ```ignore
+// /// #[derive(..{alias})]
+// /// struct Example;
+// /// ```
+// ///
+// /// Which expands to the following:
+// ///
+// /// ```ignore
+// {real_cfg_expansions}\
+// /// struct Example;
+// /// ```
+// pub trait {alias} {{}}",
+//         );
+//     }
 
-    //         writeln!(
-    //             w,
-    //             "
-    // /// Derive alias `..{alias}` can be used like this:
-    // ///
-    // /// ```ignore
-    // /// #[derive(..{alias})]
-    // /// struct Example;
-    // /// ```
-    // ///
-    // /// Which expands to the following:
-    // ///
-    // /// ```ignore
-    // {real_cfg_expansions}\
-    // /// struct Example;
-    // /// ```
-    // pub trait {alias} {{}}",
-    //         );
-    //     }
-
-    //     w.flush().unwrap_or_else(|err| panic!("failed to write file {}, which would contain documentation about derive aliases: {err}", doc_file_path.display()));
-
-    (alias_map, errors)
-});
+//     w.flush().unwrap_or_else(|err| panic!("failed to write file {}, which would contain documentation about derive aliases: {err}", doc_file_path.display()));
 
 /// Render the derive attribute depending on how many `cfg`s there are.
 ///
@@ -176,7 +166,7 @@ pub static ALIAS_MAP: LazyLock<(AliasMap, Errors)> = LazyLock::new(|| {
 /// - `#[derive(A, B)]` if `cfgs` is empty
 /// - `#[cfg_attr(A), derive(A, B)]` if `cfgs` has exactly 1 item
 /// - `#[cfg_attr(all(A, B), derive(A, B))]` if `cfgs` has 2 or more items
-fn render_doc_comment_derive(cfgs: &[dsl::Cfg], derives: &[dsl::Derive]) -> String {
+pub fn render_doc_comment_derive(cfgs: &[dsl::Cfg], derives: &[dsl::Derive]) -> String {
     // sort them, so we will always have a reproducible order (otherwise it would be different on every compilation)
     let mut derives_sorted = derives.iter().collect::<Vec<_>>();
     derives_sorted.sort_unstable_by_key(|derive| derive.to_string());
@@ -249,7 +239,7 @@ fn list_to_string_via_intersperse_with<T: ToString>(
 /// Create the `AliasMap`
 ///
 /// Separate function for use in tests
-fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
+pub fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Errors) {
     // Recursive map of `Alias => (..Alias OR Derive)`, where `Derive` is a "leaf" but an `..Alias` can
     // be expanded into a list of (..Alias OR Derive)
     let (nested_alias_map, mut errors) = parse(content, path.as_ref());
