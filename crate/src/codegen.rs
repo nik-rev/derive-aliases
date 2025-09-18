@@ -11,6 +11,7 @@ use std::collections::HashSet;
 ///
 /// ```ignore
 /// use crate::derive_aliases_doc::MyAlias as _;
+///     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ import
 /// ```
 ///
 /// Then hovering over `MyAlias`:
@@ -22,30 +23,32 @@ use std::collections::HashSet;
 ///
 /// Will actually show documentation for the `derive_aliases_doc::MyAlias` because
 /// we relate their spans together
-pub fn dummy_import(alias: proc_macro::Ident) -> impl Iterator<Item = TokenTree> {
+pub fn use_underscore(
+    import: impl Iterator<Item = TokenTree>,
+    span: Span,
+) -> impl Iterator<Item = TokenTree> {
     chain![
-        ident("use"),
-        ident("crate"),
-        path_sep(),
-        ident("derive_aliases_doc"),
-        path_sep(),
-        [TokenTree::Ident(Ident::new(
-            &alias.to_string(),
-            // TODO: This span only covers the identifier part:
-            //
-            // ..Alias
-            //   ^^^^^
-            //
-            // What we actually want is a span that also covers the 2 dots:
-            //
-            // ..Alias
-            // ^^^^^^^
-            //
-            // This would be possible with `Span::join`, but it is unstable
-            alias.span()
-        ))],
-        ident("as"),
-        ident("_"),
+        ident("use", span),
+        import.map(move |mut tt| {
+            tt.set_span(span);
+            tt
+        }),
+        ident("as", span),
+        ident("_", span),
+        punct(';')
+    ]
+}
+
+/// Just like `use_underscore`, but keeps span of the import as-is
+pub fn use_underscore_keep_span(
+    import: impl Iterator<Item = TokenTree>,
+    span: Span,
+) -> impl Iterator<Item = TokenTree> {
+    chain![
+        ident("use", span),
+        import,
+        ident("as", span),
+        ident("_", span),
         punct(';')
     ]
 }
@@ -134,8 +137,8 @@ pub fn cfg_std_derive_attr(
         ),
         [cfg] => {
             chain![
-                ident("cfg_attr"),
-                group::<'('>(
+                ident("cfg_attr", Span::call_site()),
+                nested_in::<'(', ')'>(
                     chain![
                         cfg.cfg
                             .parse::<TokenStream>()
@@ -151,12 +154,12 @@ pub fn cfg_std_derive_attr(
         [..] => {
             // cfg_attr(all($cfg1, $cfg2,)), std::derive($derives)
             chain![
-                ident("cfg_attr"),
-                group::<'('>(
+                ident("cfg_attr", Span::call_site()),
+                nested_in::<'(', ')'>(
                     // all($cfg1, $cfg2,)
                     chain![
-                        ident("all"),
-                        group::<'('>(
+                        ident("all", Span::call_site()),
+                        nested_in::<'(', ')'>(
                             cfgs.iter()
                                 .flat_map(|cfg| {
                                     cfg.cfg
@@ -182,7 +185,18 @@ pub fn cfg_std_derive_attr(
 
 /// Wrap token stream in an attribute: `#[$tt]`
 pub fn attr(tt: TokenStream) -> impl Iterator<Item = TokenTree> {
-    punct('#').chain(group::<'['>(tt))
+    punct('#').chain(nested_in::<'[', ']'>(tt))
+}
+
+/// A "function-like" attribute: `#[$f($arg)]`
+pub fn attr_fn(f: &str, arg: &str) -> impl Iterator<Item = TokenTree> {
+    attr(
+        chain![
+            ident(f, Span::call_site()),
+            nested_in::<'(', ')'>(ident(arg, Span::call_site()).collect())
+        ]
+        .collect(),
+    )
 }
 
 /// Resolve the derive arguments into something that can be passed into `std::derive(..)`
@@ -215,11 +229,11 @@ pub fn into_std_derive_arguments(
             all_derives.extend(path_sep());
         }
 
-        all_derives.extend(ident(&derive.components.first.name));
+        all_derives.extend(ident(&derive.components.first.name, Span::call_site()));
 
         for (_, component) in &derive.components.items {
             all_derives.extend(path_sep());
-            all_derives.extend(ident(&component.name));
+            all_derives.extend(ident(&component.name, Span::call_site()));
         }
 
         // No trailing comma, this is especially important when we have no `cfg`s.
@@ -249,25 +263,27 @@ pub fn into_std_derive_arguments(
 pub fn std_derive(derives: TokenStream) -> impl Iterator<Item = TokenTree> {
     chain![
         path_sep(),
-        ident("core"),
+        ident("core", Span::call_site()),
         path_sep(),
-        ident("prelude"),
+        ident("prelude", Span::call_site()),
         path_sep(),
-        ident("v1"),
+        ident("v1", Span::call_site()),
         path_sep(),
-        ident("derive"),
-        group::<'('>(derives),
+        ident("derive", Span::call_site()),
+        nested_in::<'(', ')'>(derives),
     ]
 }
 
 /// Wrap tokens inside of `[...]`, `{...}` or `(...)`
-pub fn group<const DELIMITER: char>(stream: TokenStream) -> impl Iterator<Item = TokenTree> {
+pub fn nested_in<const OPEN: char, const CLOSE: char>(
+    stream: TokenStream,
+) -> impl Iterator<Item = TokenTree> {
     [TokenTree::Group(Group::new(
-        match DELIMITER {
-            '{' => Delimiter::Brace,
-            '(' => Delimiter::Parenthesis,
-            '[' => Delimiter::Bracket,
-            _ => unreachable!(),
+        match (OPEN, CLOSE) {
+            ('{', '}') => Delimiter::Brace,
+            ('(', ')') => Delimiter::Parenthesis,
+            ('[', ']') => Delimiter::Bracket,
+            _ => panic!("invalid delimiters"),
         },
         stream,
     ))]
@@ -280,13 +296,8 @@ pub fn path_sep() -> impl Iterator<Item = TokenTree> {
 }
 
 /// Turn `ident` into a Rust identifier
-pub fn ident(ident: &str) -> impl Iterator<Item = TokenTree> {
-    [TokenTree::Ident(Ident::new(ident, Span::call_site()))].into_iter()
-}
-
-/// Turn `ident` into a Rust identifier, with the given `span`
-pub fn ident_spanned(ident: &str, span: Span) -> impl Iterator<Item = TokenTree> {
-    [TokenTree::Ident(Ident::new(ident, span))].into_iter()
+pub fn ident(ident: impl AsRef<str>, span: Span) -> impl Iterator<Item = TokenTree> {
+    [TokenTree::Ident(Ident::new(ident.as_ref(), span))].into_iter()
 }
 
 /// Turn `ch` into a Rust punctuation

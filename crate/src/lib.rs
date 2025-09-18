@@ -75,11 +75,12 @@
 //! ```
 
 use alias_map::ALIAS_MAP;
-use codegen::{ident, ident_spanned, punct, CompileError};
+use codegen::{punct, use_underscore_keep_span, CompileError};
 use dsl::Alias;
-use proc_macro::{Delimiter, Ident, Span, TokenStream, TokenTree};
+use proc_macro::{Delimiter, Span, TokenStream, TokenTree};
 use std::collections::HashMap;
 use std::io::Write;
+use std::iter::{self, once};
 use std::sync::atomic::AtomicBool;
 use std::{collections::HashSet, fs::File, io::BufWriter, path::PathBuf, sync::LazyLock};
 
@@ -107,22 +108,28 @@ macro_rules! write {
     };
 }
 
+// TODO: Allow composing `derive_aliases` files from different crates
+//
+// Syntax:
+//
+//     extern use foo::bar;
+//
+// This expects `foo` to be a crate, and `foo::bar` to be the exact module path where the crate's
+// `derive_aliases::define!` macro was invoked
+//
+// We will invoke `cargo metadata` to find the crate `foo`'s manifest directory.
+// From here on, we will know where its location is in the `/tmp` directory
+//
+// We will read its `derive_aliases` file and inline it into ours.
+
 // when doing `#[macro_use] extern crate proc` we will also globally import this macro
 // and it will be suggested by rust_analyzer. but since this macro must be called just once,
 // we don't want rust_analyzer to suggest it
 #[cfg_attr(not(doc), doc(hidden))]
 #[proc_macro]
 pub fn define(derive_aliases: TokenStream) -> TokenStream {
-    if DEFINE_MACRO_CALLED.load(std::sync::atomic::Ordering::Acquire) {
-        return CompileError::new(
-            Span::call_site(),
-            "You can only call `derive_aliases::define!` at most once per crate",
-        )
-        .into_iter()
-        .collect();
-    }
-
-    DEFINE_MACRO_CALLED.store(true, std::sync::atomic::Ordering::Release);
+    /// The module where documentation for all aliases will exist
+    const DERIVE_ALIASES_MODULE_NAME: &str = "derive_aliases_doc";
 
     let file = File::create(&*DERIVE_ALIASES_FILE).unwrap_or_else(|err| {
         panic!(
@@ -138,9 +145,7 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
     let mut doc_tokens = TokenStream::new();
     let mut dummy_imports = TokenStream::new();
 
-    let mut alias_to_string = HashMap::new();
-
-    // Eat a path until the end
+    // Eat a path until the end (until we find ';' or ',')
     //
     // Alias = Foo, ..Bar, std::hash::Hash;
     //         ^ start
@@ -150,8 +155,11 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
     //                     ^^^^^^^^^^^^^^ eaten
     //                                   ^ semicolon = end
     macro_rules! eat_path {
-        () => {{
+        // span of the `tt` directly preceding this path, used for errors if the path is empty
+        ($span_of_path_start:expr) => {{
             let mut derive_path = TokenStream::new();
+            let mut last_token_span = None;
+
             // Build up the actual, full derive path like `std::hash::Hash`
             while let Some(tt) = tts.next_if(|tt| {
                 // eat until we find ',' or ';', which indicates end of the path
@@ -162,7 +170,8 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
                 // Alias = std::cmp::Ord, std::hash::Hash;
                 //                                       ^ end
                 if let TokenTree::Punct(punct) = tt {
-                    punct.as_char() != ',' && punct.as_char() != ';'
+                    // if ',' or ';' then we stop
+                    *punct != ',' && *punct != ';'
                 } else {
                     // continue eating
                     true
@@ -170,9 +179,50 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
             }) {
                 write!(w, "{tt}");
 
-                // this is a path, either `::` or identifier like `foo`
-                derive_path.extend([tt]);
+                last_token_span = Some(tt.span());
+
+                match tt {
+                    TokenTree::Punct(ref punct) if *punct == ':' => {
+                        let next_tt = tts.next();
+
+                        match next_tt {
+                            Some(TokenTree::Punct(ref punct_2)) if *punct_2 == ':' => {
+                                derive_path.extend([
+                                    tt,
+                                    next_tt.expect("we just got `Some` for `.next()`"),
+                                ]);
+                            }
+                            _ => errors.extend(CompileError::new(
+                                punct.span(),
+                                "expected `:` after this to form a `::`",
+                            )),
+                        }
+                    }
+                    TokenTree::Ident(_) => {
+                        derive_path.extend([tt]);
+                    }
+                    _ => errors.extend(CompileError::new(
+                        tt.span(),
+                        "expected `::` or identifier after this",
+                    )),
+                }
             }
+
+            // Check that a `,` or `;` is present after the path
+            match tts.next() {
+                Some(TokenTree::Punct(punct)) if punct == ',' || punct == ';' => {
+                    // ok
+                }
+                _ => errors.extend(CompileError::new(
+                    if let Some(last_span) = last_token_span {
+                        last_span
+                    } else {
+                        $span_of_path_start
+                    },
+                    "expected `,` or `;` after this token",
+                )),
+            };
+
             derive_path
         }};
     }
@@ -181,82 +231,138 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
         match tt {
             // for `#[cfg(...)]`
             //       ^        ^ delimiters
-            //
-            //       ^^^^^^^^^^ we will write this
-            TokenTree::Group(group) if group.delimiter() == Delimiter::Bracket => {
+            //      ^ started
+            TokenTree::Punct(punct) if punct == '#' => {
+                let next_tt = tts.next();
+                let group = match next_tt {
+                    Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Bracket => {
+                        group
+                    }
+                    _ => {
+                        errors.extend(CompileError::new(punct.span(), "expected `[...]` after the `#` to form a `cfg` attribute: `#[cfg(...)]`"));
+                        continue;
+                    }
+                };
                 // write the entire cfg without processing it
                 write!(w, "[{}]", group.stream().to_string());
             }
-            TokenTree::Ident(ident) => {
+            TokenTree::Ident(ref ident) => {
                 write!(w, "{ident}");
+                let ident_span = ident.span();
 
-                match tts.peek() {
-                    // if the next token is a '=', the current identifier is an alias definition
-                    Some(TokenTree::Punct(punct)) if punct.as_char() == '=' => {
-                        //
-                        // Alias = Ord, PartialOrd;
-                        // ^^^^^ we are here
-                        //       ^ next
-                        //
+                match tts.next() {
+                    // if the next token is '=', the current identifier is an alias definition
+                    //
+                    // Alias = Ord, PartialOrd;
+                    // ^^^^^ we are here
+                    //       ^ next
+                    //
+                    Some(TokenTree::Punct(punct)) if punct == '=' => {
                         let ident_string = ident.to_string();
 
-                        // add it so when the alias is referenced like `..Alias` we will also show doc on hover
-                        alias_to_string.insert(ident_string.clone(), ident.span());
-
-                        // pub trait Alias {}
+                        // pub mod Alias {}
                         doc_tokens.extend(chain![
-                            codegen::ident("pub"),
-                            codegen::ident("mod"),
+                            codegen::ident("pub", Span::call_site()),
+                            codegen::ident("mod", Span::call_site()),
                             // when we hover over definition in the macro,
                             // we'll actually see what the alias will expand to
-                            [TokenTree::Ident(Ident::new(&ident_string, ident.span()))],
-                            codegen::group::<'{'>(TokenStream::new()),
+                            codegen::ident(ident_string, ident_span),
+                            // mod has nothing in it; it's just for documentation
+                            codegen::nested_in::<'{', '}'>(TokenStream::new()),
                         ]);
                     }
-                    // if the next token is a ':', the current identifier is the beginning of a path to a derive
-                    //
-                    // Alias = Ord, std::hash::Hash;
-                    //              ^^^ we are here
-                    //                 ^ next
-                    //
-                    // if the next token is a ',', the current derive is just a single identifier
+                    // if the next token is ',' the current derive is just a single identifier
                     //
                     // Alias = Ord, std::hash::Hash;
                     //         ^^^ we are here
+                    //            ^ terminator
                     //
-                    Some(TokenTree::Punct(punct)) if matches!(punct.as_char(), ':' | ',') => {
-                        dummy_imports.extend(chain![
-                            codegen::ident("pub"),
-                            codegen::ident("use"),
-                            // the identifier that we already got
-                            [TokenTree::Ident(Ident::new(
-                                &ident.to_string(),
-                                ident.span()
-                            ))],
-                            // literally just copy and paste those tokens here,
-                            // so when user hovers over ANY part of the path they will see the
-                            // real derive macro definition in Rust
-                            eat_path!(),
-                            codegen::ident("as"),
-                            codegen::ident("_"),
+                    // ...or if the next token is ';' the current derive is just a single identifier
+                    //
+                    // Alias = Ord;
+                    //         ^^^ we are here
+                    //            ^ terminator
+                    //
+                    Some(TokenTree::Punct(terminator))
+                        if matches!(terminator.as_char(), ';' | ',') =>
+                    {
+                        dummy_imports.extend(codegen::use_underscore_keep_span(
+                            iter::once(tt.clone()),
+                            tt.clone().span(),
+                        ));
+                    }
+                    // if the next token is a ':' the current identifier is the beginning of a path to a derive
+                    //
+                    // Alias = Ord, std::hash::Hash, Foo;
+                    //              ^^^ we are here
+                    //                 ^ next
+                    Some(TokenTree::Punct(colon)) if colon == ':' => {
+                        let colon_colon = match tts.next() {
+                            Some(TokenTree::Punct(punct_2)) if punct_2 == ':' => {
+                                // ok
+                                punct_2
+                            }
+                            _ => {
+                                errors.extend(CompileError::new(
+                                    colon.span(),
+                                    "expected `:` after this to form `::` (path segment)",
+                                ));
+                                continue;
+                            }
+                        };
+
+                        let rest_of_path = eat_path!(ident_span);
+
+                        dummy_imports.extend(codegen::use_underscore_keep_span(
+                            chain![
+                                iter::once(tt),
+                                once(TokenTree::Punct(colon)),
+                                once(TokenTree::Punct(colon_colon)),
+                                rest_of_path
+                            ],
+                            Span::call_site(),
+                        ));
+                    }
+                    // Imports derive aliases from another crate
+                    //
+                    // extern use foo::bar;
+                    Some(TokenTree::Ident(kw_use))
+                        if ident.to_string() == "extern" && kw_use.to_string() == "use" =>
+                    {
+                        // extern use foo::bar;
+                        //            ^^^^^^^^ the crate and module
+                        let path = eat_path!(kw_use.span());
+
+                        if path.is_empty() {
+                            errors.extend(CompileError::new(kw_use.span(), "expected a path after this identifier, e.g. `extern use foo::bar;`"));
+                        }
+
+                        // pub use foo::bar::*;
+                        //
+                        // We use everything from the module so we can do "goto definition" or "hover"
+                        // and still get the very same documentation, even though it's in a completely different
+                        // crate
+                        doc_tokens.extend(chain![
+                            codegen::ident("pub", Span::call_site()),
+                            codegen::ident("use", kw_use.span()),
+                            path,
+                            codegen::path_sep(),
+                            codegen::ident(DERIVE_ALIASES_MODULE_NAME, Span::call_site()),
+                            codegen::path_sep(),
+                            codegen::punct('*'),
                             codegen::punct(';'),
                         ]);
                     }
-                    Some(TokenTree::Punct(punct)) if punct.as_char() == ';' => {
-                        dummy_imports.extend(chain![
-                            codegen::ident("pub"),
-                            codegen::ident("use"),
-                            // the identifier that we already got
-                            [TokenTree::Ident(Ident::new(
-                                &ident.to_string(),
-                                ident.span()
-                            ))],
-                            codegen::ident("as"),
-                            codegen::ident("_"),
-                            codegen::punct(';'),
-                        ]);
-                    }
-                    _ => (),
+                    // extern, but not followed by "use"
+                    _ if ident.to_string() == "extern" => errors.extend(CompileError::new(
+                        ident.span(),
+                        "expected `use` after this `extern`",
+                    )),
+                    None => errors.extend(CompileError::new(
+                        ident.span(),
+                        "expected a ';' after this identifier",
+                    )),
+                    Some(any) => errors.extend(CompileError::new(any.span(), "unexpected token")),
                 }
             }
             // we are at the beginning of a reference to a derive that uses an absolute path
@@ -265,29 +371,67 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
             //              ^ we are here
             //              ^^^^^^^^^^^^^^^^^ when user hovers here, we'll reference the
             //                                actul spans of `Hash`
-            TokenTree::Punct(punct) if punct.as_char() == ':' => {
-                write!(w, "{}", punct.as_char());
+            TokenTree::Punct(ref colon) if *colon == ':' => {
+                let next_tt = tts.next();
+                let colon_colon = match next_tt {
+                    Some(TokenTree::Punct(ref colon_colon)) if *colon_colon == ':' => colon_colon,
+                    _ => {
+                        errors.extend(CompileError::new(
+                            colon.span(),
+                            "expected `:` after this to form a path separator: `::`",
+                        ));
+                        continue;
+                    }
+                };
 
-                dummy_imports.extend(chain![
-                    codegen::ident("pub"),
-                    codegen::ident("use"),
-                    // same as before, eat until we find ',' or ';'
-                    // for documentation on hover
-                    eat_path!(),
-                    codegen::ident("as"),
-                    codegen::ident("_"),
-                    codegen::punct(';'),
-                ]);
+                write!(w, "::");
+
+                // Rest of the path
+                let path = eat_path!(colon_colon.span());
+
+                // same as before, eat until we find ',' or ';'
+                // for documentation on hover
+                dummy_imports.extend(use_underscore_keep_span(
+                    chain![
+                        once(tt),
+                        once(next_tt.expect("would have `continue`d otherwise")),
+                        path.into_iter()
+                    ],
+                    Span::call_site(),
+                ))
             }
-            TokenTree::Punct(dot) if dot.as_char() == '.' => {
-                write!(w, "{}", dot.as_char());
+            // alias usage: ..Alias
+            TokenTree::Punct(dot) if dot == '.' => {
+                // Next token must be a `.`
+                let dot_dot = match tts.next() {
+                    Some(TokenTree::Punct(dot_dot)) if dot_dot == '.' => dot_dot,
+                    _ => {
+                        errors.extend(CompileError::new(
+                            dot.span(),
+                            "expected `.` after this to spread an alias: `..Alias` into derives",
+                        ));
+                        continue;
+                    }
+                };
+
+                write!(w, "..");
 
                 // we are in an alias usage site
                 //
                 // Alias = Foo, ..Another
                 //               ^ we are here
                 //                ^^^^^^^ then the next identifier must be an alias Usage site
-                if let Some(TokenTree::Ident(alias_ident)) = tts.peek() {
+                if let Some(TokenTree::Ident(alias_ident)) = tts.next() {
+                    match tts.next() {
+                        Some(TokenTree::Punct(punct)) if punct == ';' || punct == ',' => {
+                            // ok
+                        }
+                        _ => errors.extend(CompileError::new(
+                            alias_ident.span(),
+                            "expected `;` or `,` after this alias",
+                        )),
+                    }
+
                     // When the user hovers over `..Another`, we want to display documentation
                     // of the alias and what it expands to. Basically, same as if we hovered over
                     // the definition
@@ -295,55 +439,42 @@ pub fn define(derive_aliases: TokenStream) -> TokenStream {
                     // pub use Alias as _;
                     //         ^^^^^ the span that we will set it to
                     doc_tokens.extend(chain![
-                        ident("pub"),
-                        ident("use"),
-                        ident_spanned(&alias_ident.to_string(), alias_ident.span()),
-                        ident("as"),
-                        ident("_"),
+                        codegen::ident("pub", alias_ident.span()),
+                        codegen::ident("use", alias_ident.span()),
+                        codegen::ident(alias_ident.to_string(), alias_ident.span()),
+                        codegen::ident("as", alias_ident.span()),
+                        codegen::ident("_", alias_ident.span()),
                         punct(';'),
                     ]);
 
                     write!(w, "{alias_ident}");
-
-                    // Consume the alias
-                    tts.next();
+                } else {
+                    errors.extend(CompileError::new(dot_dot.span(), "expected name of alias after `..` to spread an alias: `..Alias` into derives"));
                 }
             }
-            TokenTree::Punct(punct) if matches!(punct.as_char(), '=' | ',' | '#' | ';') => {
-                write!(w, "{}", punct.as_char())
+            unexpected => {
+                errors.extend(CompileError::new(unexpected.span(), "unexpected token"));
             }
-            TokenTree::Group(group) => {
-                errors.extend(CompileError::new(group.span(), "group is not supported"))
-            }
-            TokenTree::Punct(punct) => errors.extend(CompileError::new(
-                punct.span(),
-                "this punctuation is not supported",
-            )),
-            TokenTree::Literal(literal) => errors.extend(CompileError::new(
-                literal.span(),
-                "literals are not supported",
-            )),
         }
     }
 
+    // Write to the file
     w.flush().unwrap();
 
     TokenStream::from_iter(chain![
-        codegen::attr(
-            chain![
-                codegen::ident("allow"),
-                codegen::group::<'('>(codegen::ident("non_snake_case").collect())
-            ]
-            .collect()
-        ),
-        codegen::ident("mod"),
-        codegen::ident("derive_aliases_doc"),
-        codegen::group::<'{'>(
+        codegen::attr_fn("allow", "non_snake_case"),
+        codegen::attr_fn("allow", "unused_imports"),
+        codegen::attr_fn("doc", "hidden"),
+        //
+        codegen::ident("pub", Span::call_site()),
+        codegen::ident("mod", Span::call_site()),
+        codegen::ident(DERIVE_ALIASES_MODULE_NAME, Span::call_site()),
+        codegen::nested_in::<'{', '}'>(
             chain![
                 doc_tokens,
-                codegen::ident("mod"),
-                codegen::ident("dummy_imports"),
-                codegen::group::<'{'>(dummy_imports)
+                codegen::ident("mod", Span::call_site()),
+                codegen::ident("dummy_imports", Span::call_site()),
+                codegen::nested_in::<'{', '}'>(dummy_imports)
             ]
             .collect()
         ),
@@ -482,7 +613,7 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
             continue;
         };
 
-        if punct.as_char() != '.' {
+        if *punct != '.' {
             // Do not add leading commas.
             //
             // This can happen when there is an alias at the beginning, but it is removed because it has `cfg`s
@@ -497,7 +628,7 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
             // #[derive(, PartialOrd)]
             //          ^ this comma still exists, must be removed
             //
-            if punct.as_char() == ',' && no_cfg_derives.is_empty() {
+            if *punct == ',' && no_cfg_derives.is_empty() {
                 // skip
             } else {
                 no_cfg_derives.extend([tt]);
@@ -507,7 +638,7 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
 
         let Some(punct_next) = input.next_if(|tt| {
             if let TokenTree::Punct(punct) = tt {
-                punct.as_char() == '.'
+                *punct == '.'
             } else {
                 false
             }
@@ -580,7 +711,23 @@ fn expand_aliases(input: TokenStream) -> TokenStream {
         }
 
         // dummy `use` simply to reference the `alias` in the generated doc module, for documentation on hover
-        dummy_imports_for_docs.extend(codegen::dummy_import(alias));
+        // TODO: This span only covers the identifier part:
+        //
+        // ..Alias
+        //   ^^^^^
+        //
+        // What we actually want is a span that also covers the 2 dots:
+        //
+        // ..Alias
+        // ^^^^^^^
+        //
+        // This would be possible with `Span::join`, but it is unstable
+        let span = alias.span();
+
+        dummy_imports_for_docs.extend(codegen::use_underscore(
+            iter::once(TokenTree::Ident(alias)),
+            span,
+        ));
     }
 
     // We split into 2 parts because we don't want to generate a `#[std::derive(..)]` if there are no non-cfg derives
@@ -632,9 +779,6 @@ fn most_similar_alias(alias: impl AsRef<str>) -> Option<String> {
         .filter(|it| it.1 >= 0.70)
         .map(|it| it.0)
 }
-
-/// We can only call `derive_aliases::define!` once. Disallow duplicate invocations.
-static DEFINE_MACRO_CALLED: AtomicBool = AtomicBool::new(false);
 
 /// When the `derive_aliases::define!` macro is called, it processes the received
 /// `TokenStream` and then dumps the tokens into this file.

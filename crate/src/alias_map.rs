@@ -55,11 +55,8 @@
 //! #[cfg_attr(all(D, C, D), std::derive(Hash, Eq))]
 //! ```
 
-use std::io::Write;
 use std::{
     collections::HashMap,
-    fs::{self, File},
-    io::{BufReader, BufWriter, Read},
     iter,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
