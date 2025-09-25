@@ -74,10 +74,11 @@
 //  Eq = PartialEq, Eq;
 //  ```
 
+use core::fmt;
 use proc_macro::{Delimiter, Group, Ident, Punct, Span, TokenStream, TokenTree};
 use proc_macro::{Literal, Spacing};
-use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
 
 // mod alias_map;
@@ -120,6 +121,142 @@ struct Path {
     ///            ^^^^^^
     /// ```
     components: Vec<(PathSeparator, Ident)>,
+}
+
+impl fmt::Display for Path {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.leading_colon.is_some() {
+            f.write_str("::")?;
+        }
+        f.write_str(&self.first_component.to_string())?;
+        for (_sep, component) in &self.components {
+            f.write_str("::")?;
+            f.write_str(&component.to_string())?;
+        }
+
+        Ok(())
+    }
+}
+
+const PRELUDE_PATHS: &[&str] = &[
+    "core::marker::Copy",
+    "core::clone::Clone",
+    "core::fmt::Debug",
+    "core::default::Default",
+    "core::cmp::PartialEq",
+    "core::cmp::Eq",
+    "core::cmp::PartialOrd",
+    "core::cmp::Ord",
+];
+
+fn generate_use_statements_string(alias: &str, paths: &HashSet<Path>) -> String {
+    // We want to group each path by where it is located,
+    // if we import a bunch of derives from `num_traits` then we want to group those
+    // into a single `use`
+    //
+    // To do this we hash the path to the parent module/crate that contains the alias
+    let mut grouped_by_parent = HashMap::new();
+
+    let mut derive_contents = BTreeSet::new();
+
+    for path in paths {
+        let mut components = path.components.clone();
+        let derive = components
+            .pop()
+            .expect("Derive cannot be located at crate root")
+            .1
+            .to_string();
+
+        let first_component = path.first_component.to_string();
+        let first_component = if first_component == "std" {
+            "core".to_string()
+        } else {
+            first_component
+        };
+
+        let path = Path {
+            leading_colon: None,
+            first_component: Ident::new(&first_component.to_string(), Span::call_site()),
+            components,
+        };
+
+        let path_string = path.to_string();
+        if PRELUDE_PATHS.contains(&format!("{path_string}::{derive}").as_str()) {
+            // insert derive directly, without the `use`
+            derive_contents.insert(derive);
+            continue;
+        }
+
+        grouped_by_parent
+            .entry(path)
+            .or_insert_with(Vec::new)
+            .push(derive);
+    }
+
+    derive_contents.extend(grouped_by_parent.values().flatten().cloned());
+
+    let uses = grouped_by_parent
+        .into_iter()
+        .map(|(key, uses)| match &uses[..] {
+            [single] => {
+                format!("use {key}::{single}")
+            }
+            [..] => {
+                if uses.len() >= 10 {
+                    let content = uses.into_iter().collect::<Vec<_>>();
+                    // format long list of derives in a more nice manner
+                    let derives = content
+                        .chunks(5)
+                        .map(|derives| format!("    {},\n", derives.join(", ")))
+                        .collect::<String>();
+                    // remove trailing comma
+                    if let Some(uses) = derives.strip_suffix(",\n") {
+                        format!("\nuse {key}::{{{uses}}}\n")
+                    } else {
+                        format!("\nuse {key}::{{{derives}}}")
+                    }
+                } else {
+                    format!("use {key}::{{{}}}", uses.join(", "))
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let derives = if derive_contents.len() >= 10 {
+        let content = derive_contents.into_iter().collect::<Vec<_>>();
+        // format long list of derives in a more nice manner
+        let derives = content
+            .chunks(5)
+            .map(|derives| format!("    {},\n", derives.join(", ")))
+            .collect::<String>();
+        // remove trailing comma
+        if let Some(derives) = derives.strip_suffix(",\n") {
+            format!("\n{derives}\n")
+        } else {
+            format!("\n{derives}")
+        }
+    } else {
+        derive_contents.into_iter().collect::<Vec<_>>().join(", ")
+    };
+
+    format!(
+        "\
+Derive alias `..{alias}` can be used like this:
+
+```ignore
+#[derive(..{alias})]
+struct Example;
+```
+
+Which expands to the following:
+
+```ignore
+#[derive({derives})]
+struct Example;{}{uses}
+```",
+        if uses.is_empty() { "" } else { "\n\n" },
+    )
 }
 
 impl Hash for Path {
@@ -565,128 +702,9 @@ pub fn define(tts: TokenStream) -> TokenStream {
                                         TokenStream::from_iter([
                                             TokenTree::Ident(Ident::new("doc", Span::call_site())),
                                             TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string(&format!(
-                                                "Derive alias `..{alias}` can be used like this:"
-                                            ))),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string("")),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string("```ignore")),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string(&format!(
-                                                "#[derive(..{alias})]"
-                                            ))),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string("struct Example;")),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string("```")),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string("")),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
                                             TokenTree::Literal(Literal::string(
-                                                "Which expands to the following:",
+                                                &generate_use_statements_string(alias, &derives),
                                             )),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string("```ignore")),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string(&format!(
-                                                "#[derive({})]",
-                                                derives
-                                                    .iter()
-                                                    .map(|i| {
-                                                        String::from("::")
-                                                            + &i.first_component.to_string()
-                                                            + "::"
-                                                            + &i.components
-                                                                .iter()
-                                                                .map(|(_, ident)| ident.to_string())
-                                                                .collect::<Vec<_>>()
-                                                                .join("::")
-                                                    })
-                                                    .collect::<Vec<_>>()
-                                                    .join(", ")
-                                            ))),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string("struct Example;")),
-                                        ]),
-                                    )),
-                                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                                    TokenTree::Group(Group::new(
-                                        Delimiter::Bracket,
-                                        TokenStream::from_iter([
-                                            TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                                            TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                                            TokenTree::Literal(Literal::string("```")),
                                         ]),
                                     )),
                                     TokenTree::Ident(Ident::new(
