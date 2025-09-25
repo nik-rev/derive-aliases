@@ -200,20 +200,25 @@ use derive_alias::Everything;
 //     ::Ord],[::core ::cmp ::PartialEq],[::core ::cmp ::Eq],
 // }
 
-// macro_rules! implements_traits {
-//     ($name:ident #[$($input:tt)*] => $($($segment:ident)::*),*) => {
-//         mod $name {
-//             #[derive_aliases::derive($($input)*)]
-//             pub struct A(());
-//         }
+macro_rules! expect_expansion {
+    ($name:ident [$($input:tt)*] => $($($segment:ident)::*),*) => {
+        mod $name {
+            #[derive_aliases::derive($($input)*)]
+            pub struct A(());
+        }
 
-//         // HACK: since we can't use `+` as repetition separator
-//         #[allow(warnings, reason = "only for type check")]
-//         fn $name<A: $($($segment)::* +)* Sized>() {
-//             $name::<$name::A>();
-//         }
-//     };
-// }
+        // HACK: since we can't use `+` as repetition separator
+        #[allow(warnings, reason = "only for type check")]
+        fn $name<A: $($($segment)::* +)* Sized>() {
+            $name::<$name::A>();
+        }
+    };
+}
+
+// crate::derive_alias::Eq! { @[] [pub struct A(());] [] }
+
+expect_expansion!(a [Clone] => Clone);
+expect_expansion!(b [..Eq] => Eq, PartialEq);
 
 // // Simple alias
 // implements_traits!(a #[..Eq] => Eq, PartialEq);

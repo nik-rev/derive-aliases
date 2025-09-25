@@ -720,7 +720,7 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
     // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
     //
     // We treat the last alias specially
-    if let Some(first_alias) = aliases.pop() {
+    let tts = if let Some(first_alias) = aliases.pop() {
         let innermost_ts = TokenStream::from_iter([
             TokenTree::Punct(Punct::new('@', Spacing::Joint)),
             TokenTree::Group(Group::new(Delimiter::Bracket, regular_derives)),
@@ -761,17 +761,18 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
             TokenTree::Punct(Punct::new(':', Spacing::Joint)),
             TokenTree::Punct(Punct::new(':', Spacing::Joint)),
             TokenTree::Ident(first_alias),
+            TokenTree::Punct(Punct::new('!', Spacing::Joint)),
             TokenTree::Group(Group::new(Delimiter::Brace, stream)),
         ])
     } else {
         // No derive aliases used.
         // Just pass all derives to the standard library's
-        TokenStream::from_iter([
-            TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-            TokenTree::Group(Group::new(
-                Delimiter::Bracket,
-                TokenStream::from_iter(
-                    [
+        TokenStream::from_iter(
+            [
+                TokenTree::Punct(Punct::new('#', Spacing::Joint)),
+                TokenTree::Group(Group::new(
+                    Delimiter::Bracket,
+                    TokenStream::from_iter([
                         TokenTree::Punct(Punct::new(':', Spacing::Joint)),
                         TokenTree::Punct(Punct::new(':', Spacing::Joint)),
                         TokenTree::Ident(Ident::new("core", Span::call_site())),
@@ -785,13 +786,17 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                         TokenTree::Punct(Punct::new(':', Spacing::Joint)),
                         TokenTree::Ident(Ident::new("derive", Span::call_site())),
                         TokenTree::Group(Group::new(Delimiter::Parenthesis, regular_derives)),
-                    ]
-                    .into_iter()
-                    .chain(item),
-                ),
-            )),
-        ])
-    }
+                    ]),
+                )),
+            ]
+            .into_iter()
+            .chain(item),
+        )
+    };
+
+    // panic!("{tts}");
+
+    tts
 }
 
 /// A single entity that appears on the RHS of an alias declaration

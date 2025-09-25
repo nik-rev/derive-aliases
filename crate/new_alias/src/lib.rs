@@ -2,7 +2,7 @@
 #![allow(clippy::crate_in_macro_def)]
 
 #[doc(inline)]
-pub use derive_aliases_impl::define;
+pub use derive_aliases_impl::{define, derive};
 
 /// # Glyphs
 ///
@@ -93,7 +93,6 @@ macro_rules! __internal_new_alias {
         #[macro_export]
         #[doc(hidden)]
         macro_rules! $real_name {
-
             ///////////////////////////////////////////////////////////////
 
             // Ord! { #Eq, (Copy, (@ [Debug, ] [struct Foo;])), [] [] }
@@ -116,7 +115,7 @@ macro_rules! __internal_new_alias {
                 )*]
             ) => {
                 // Expand the inner alias
-                $_ Alias!(
+                $_ Alias! {
                     // Call insides of the macro
                     $_($_ pass)*
 
@@ -135,7 +134,7 @@ macro_rules! __internal_new_alias {
                             [$($derives)*],
                         )*
                     ]
-                )
+                }
             };
 
             //
@@ -164,7 +163,7 @@ macro_rules! __internal_new_alias {
                         )*
                     ]
                 ) => {
-                    $_ crate::derive_alias::$NAME!(
+                    crate::derive_alias::$NAME! {
                         // next alias and arguments
                         # $_ Alias, $_ pass
 
@@ -175,7 +174,7 @@ macro_rules! __internal_new_alias {
                         [$_ (
                             [ $_ ($_ deduplicated)* ],
                         )*]
-                    )
+                    }
                 };
             )*
 
@@ -199,7 +198,7 @@ macro_rules! __internal_new_alias {
                     )*
                 ]
             ) => {
-                $_ crate::derive_alias::$NAME!(
+                crate::derive_alias::$NAME! {
                     # $_ Alias, $_ pass
 
                     // process rest of the list
@@ -218,7 +217,7 @@ macro_rules! __internal_new_alias {
                         // add last path to the end, we know it can't be duplicated
                         [ $_($_ first)* ],
                     ]
-                )
+                }
             };
 
             ///////////////////////////////////////////////////////////////
@@ -287,8 +286,7 @@ macro_rules! __internal_new_alias {
                         [ $_ ($_ deduplicated:tt)* ],
                     )*]
                 ) => {
-                    // compile_error!("y");
-                    $_ crate::derive_alias::$NAME!(?
+                    crate::derive_alias::$NAME! { ?
                         $_ regular_derives
                         $_ item
 
@@ -302,7 +300,7 @@ macro_rules! __internal_new_alias {
                             // a single path
                             [$_($_ deduplicated)*],
                         )*]
-                    )
+                    }
                 };
             )*
             // Everything else is just added as-is
@@ -326,7 +324,7 @@ macro_rules! __internal_new_alias {
                     )*
                 ]
             ) => {
-                $_ crate::derive_alias::$NAME!(?
+                crate::derive_alias::$NAME! { ?
                     $_ regular_derives
                     $_ item
                     // a list of paths to process
@@ -348,7 +346,7 @@ macro_rules! __internal_new_alias {
                         // push the path we know cannot be duplicated to the end
                         [$_($_ first)*],
                     ]
-                )
+                }
             };
 
             // Reached the base case. No more nested aliases
@@ -364,7 +362,7 @@ macro_rules! __internal_new_alias {
                 )*]
             ) => {
                 // Add the existing derives but de-duplicate
-                $_ crate::derive_alias::$NAME!(?
+                crate::derive_alias::$NAME! { ?
                     $_ regular_derives
                     $_ item
 
@@ -376,7 +374,7 @@ macro_rules! __internal_new_alias {
                     // could possibly come from this alias expansion,
                     // because we don't want to accidentally get duplicates
                     []
-                )
+                }
             };
 
             ///////////////////////////////////////////////////////////////
@@ -390,7 +388,7 @@ macro_rules! __internal_new_alias {
                 )*]
             ) => {
                 // De-duplicate
-                $_ crate::derive_alias::$NAME!(
+                crate::derive_alias::$NAME! {
                     # $_ Alias,$_ tt
                     // All current derives
                     [$_ (
@@ -399,7 +397,7 @@ macro_rules! __internal_new_alias {
                     ,)*]
                     // De-duplicated derives will go in here
                     []
-                )
+                }
             };
 
             ///////////////////////////////////////////////////////////////
