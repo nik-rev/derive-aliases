@@ -91,6 +91,7 @@ macro_rules! __internal_new_alias {
     ) => {
         #[doc = $docs]
         #[macro_export]
+        #[allow(crate_in_macro_def)]
         #[doc(hidden)]
         macro_rules! $real_name {
             ///////////////////////////////////////////////////////////////
