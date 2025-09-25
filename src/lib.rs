@@ -2,7 +2,7 @@
 #![allow(clippy::crate_in_macro_def)]
 
 #[doc(inline)]
-pub use derive_aliases_impl::{define, derive};
+pub use derive_aliases_proc_macro::{define, derive};
 
 /// # Glyphs
 ///
@@ -12,7 +12,7 @@ pub use derive_aliases_impl::{define, derive};
 ///
 /// The following aliases:
 ///
-/// ```
+/// ```ignore
 /// derive_aliases::define! {
 ///     Copy = Copy, Clone, Eq;
 ///     Eq = Eq, PartialEq, std::hash::Hash;
@@ -42,14 +42,14 @@ pub use derive_aliases_impl::{define, derive};
 /// - Composing them means merging the **sets** of derives that they expand to.
 ///   What this means is 2 aliases that share derives they expand to will **merge** together.
 ///
-/// ```
+/// ```ignore
 /// #[derive_aliases::derive(..Ord, ..Eq, ..Copy, Debug)]
 /// struct Foo;
 /// ```
 ///
 /// Expands to this:
 ///
-/// ```rs
+/// ```ignore
 /// crate::derive_alias::Ord! ( crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] );
 /// ```
 ///
@@ -60,7 +60,7 @@ pub use derive_aliases_impl::{define, derive};
 ///
 /// Creating stacked aliases looks like this:
 ///
-/// ```
+/// ```ignore
 /// Ord! (%
 ///     [Ord,
 ///         [Ord,

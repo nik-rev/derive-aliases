@@ -81,22 +81,6 @@ use std::collections::HashSet;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
 use std::iter;
-use std::sync::atomic::AtomicU32;
-
-// mod alias_map;
-// mod codegen;
-// mod dsl;
-
-const PRELUDE_PATHS: &[&str] = &[
-    "core::marker::Copy",
-    "core::clone::Clone",
-    "core::fmt::Debug",
-    "core::default::Default",
-    "core::cmp::PartialEq",
-    "core::cmp::Eq",
-    "core::cmp::PartialOrd",
-    "core::cmp::Ord",
-];
 
 // when doing `#[macro_use] extern crate proc` we will also globally import this macro
 // and it will be suggested by rust_analyzer. but since this macro must be called just once,
@@ -997,6 +981,17 @@ impl IntoIterator for CompileError {
 /// Given an `alias` and its `expansion` (all derives it expands to, resolved recursively),
 /// generates documentation about the alias to put in a `///` comment
 fn generate_documentation_for_alias(alias: &str, expansion: &HashSet<Path>) -> String {
+    const PRELUDE_PATHS: &[&str] = &[
+        "core::marker::Copy",
+        "core::clone::Clone",
+        "core::fmt::Debug",
+        "core::default::Default",
+        "core::cmp::PartialEq",
+        "core::cmp::Eq",
+        "core::cmp::PartialOrd",
+        "core::cmp::Ord",
+    ];
+
     // We want to group each path by where it is located,
     // if we import a bunch of derives from `num_traits` then we want to group those
     // into a single `use`
