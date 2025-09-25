@@ -12,3 +12,6 @@ readme = "../README.md"
 
 [lib]
 proc-macro = true
+
+[features]
+show = []
