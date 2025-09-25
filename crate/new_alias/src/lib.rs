@@ -4,11 +4,78 @@
 #[doc(inline)]
 pub use derive_aliases_impl::define;
 
+/// # Glyphs
+///
+/// - `%`: Inject this alias's expansion into another `__internal_new_alias` call
+///
+/// With these aliases:
+///
+/// The following aliases:
+///
+/// ```
+/// derive_aliases::define! {
+///     Copy = Copy, Clone, Eq;
+///     Eq = Eq, PartialEq, std::hash::Hash;
+///     Ord = Ord, PartialOrd, ..Eq, std::hash::Hash;
+/// }
+/// ```
+///
+/// Expand to the following invocations of `__internal_new_alias!`:
+///
+/// ```ignore
+///  __internal_new_alias!(
+///      "a string which documents alias `Copy`" __derive_alias_Copy $ Copy! [Copy], [Clone], [Eq],
+///  );
+///  __internal_new_alias!(
+///      "a string which documents alias `Eq`" __derive_alias_Eq $ Eq! [Eq], [PartialEq], [std::hash::Hash],
+///  );
+///  __internal_new_alias!(
+///      "a string which documents alias `Ord`" __derive_alias_Ord $ Ord! [Ord], [PartialOrd], [Eq], [PartialEq], [std::hash::Hash],
+///  );
+/// ```
+///
+/// Each invocation expands to a macro after the `$`. This macro **is the real derive alias**.
+///
+/// Derive alias `macro_rules!` has the following properties:
+///
+/// - They can be composed with another derive alias
+/// - Composing them means merging the **sets** of derives that they expand to.
+///   What this means is 2 aliases that share derives they expand to will **merge** together.
+///
+/// ```
+/// #[derive_aliases::derive(..Ord, ..Eq, ..Copy, Debug)]
+/// struct Foo;
+/// ```
+///
+/// Expands to this:
+///
+/// ```rs
+/// crate::derive_alias::Ord! ( crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] );
+/// ```
+///
+/// # Notes
+///
+/// - In order to **merge** sets of derives, we don't use the `:path` specifier since it cannot be compared to another `:path`.
+///   Instead, we store paths to derives as `[$(:tt)*]` which we CAN compare with one another
+///
+/// Creating stacked aliases looks like this:
+///
+/// ```
+/// Ord! (%
+///     [Ord,
+///         [Ord,
+///             [
+///                 "Derive alias `..AndMore` can be used like this:\n\n```ignore\n#[derive(..AndMore)]\nstruct Example;\n```\n\nWhich expands to the following:\n\n```ignore\n#[derive(Clone, Copy, Default, Hash)]\nstruct Example;\n\nuse core::hash::Hash\n```" __derive_alias_AndMore$AndMore![::core::default::Default],[::core::marker::Copy],[::core::clone::Clone],[::std::hash::Hash],
+///             ]
+///         ]
+///     ]
+/// );
+/// ```
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __internal_new_alias {
     (
-        $(#[$attr:meta])*
+        $docs:literal
         $real_name:ident
         // This is simply a `$` to create the inner Alias `macro_rules!`
         $_:tt
@@ -22,58 +89,10 @@ macro_rules! __internal_new_alias {
             [$($derives:tt)*]
         ,)*
     ) => {
-        $(#[$attr])*
+        #[doc = $docs]
         #[macro_export]
         #[doc(hidden)]
         macro_rules! $real_name {
-            // Reached the base case. No more nested aliases
-            (@
-                // list of derives that did not come from alias expansion
-                $_ regular_derives:tt
-                // the item that we will generate a `#[derive]` for
-                $_ item:tt
-                // list of paths
-                [$_ (
-                    // a single path
-                    [ $_ ($_ derives:tt)* ],
-                )*]
-            ) => {
-                // Add the existing derives but de-duplicate
-                $_ crate::derive_alias::$NAME!(?
-                    $_ regular_derives
-                    $_ item
-
-                    [$_(
-                        [$_($_ derives)*]
-                    ,)*]
-
-                    // this will be populated with Derives that are NOT derives that
-                    // could possibly come from this alias expansion,
-                    // because we don't want to accidentally get duplicates
-                    []
-                )
-            };
-
-            (
-                $_ Alias:path,$_ tt:tt
-                // list of paths
-                [$_ (
-                    // a single path
-                    [ $_ ($_ derives:tt)* ],
-                )*]
-            ) => {
-                // De-duplicate
-                $_ crate::derive_alias::$NAME!(
-                    # $_ Alias,$_ tt
-                    // All current derives
-                    [$_ (
-                        // a single derive
-                        [$_($_ derives)*]
-                    ,)*]
-                    // De-duplicated derives will go in here
-                    []
-                )
-            };
 
             ///////////////////////////////////////////////////////////////
 
@@ -118,8 +137,6 @@ macro_rules! __internal_new_alias {
                     ]
                 )
             };
-
-            ///////////////////////////////////////////////////////////////
 
             //
             // Remove each derive from the set
@@ -205,7 +222,6 @@ macro_rules! __internal_new_alias {
             };
 
             ///////////////////////////////////////////////////////////////
-
 
             // Now that we've removed the traits we want to add, Add them.
             // This guarantees there is NO duplicate of them here
@@ -333,6 +349,102 @@ macro_rules! __internal_new_alias {
                         [$_($_ first)*],
                     ]
                 )
+            };
+
+            // Reached the base case. No more nested aliases
+            (@
+                // list of derives that did not come from alias expansion
+                $_ regular_derives:tt
+                // the item that we will generate a `#[derive]` for
+                $_ item:tt
+                // list of paths
+                [$_ (
+                    // a single path
+                    [ $_ ($_ derives:tt)* ],
+                )*]
+            ) => {
+                // Add the existing derives but de-duplicate
+                $_ crate::derive_alias::$NAME!(?
+                    $_ regular_derives
+                    $_ item
+
+                    [$_(
+                        [$_($_ derives)*]
+                    ,)*]
+
+                    // this will be populated with Derives that are NOT derives that
+                    // could possibly come from this alias expansion,
+                    // because we don't want to accidentally get duplicates
+                    []
+                )
+            };
+
+            ///////////////////////////////////////////////////////////////
+
+            (
+                $_ Alias:path,$_ tt:tt
+                // list of paths
+                [$_ (
+                    // a single path
+                    [ $_ ($_ derives:tt)* ],
+                )*]
+            ) => {
+                // De-duplicate
+                $_ crate::derive_alias::$NAME!(
+                    # $_ Alias,$_ tt
+                    // All current derives
+                    [$_ (
+                        // a single derive
+                        [$_($_ derives)*]
+                    ,)*]
+                    // De-duplicated derives will go in here
+                    []
+                )
+            };
+
+            ///////////////////////////////////////////////////////////////
+
+            (%
+                [
+                    // The next alias to stack
+                    $_ next_alias:path,
+
+                    // arguments to create the alias
+                    $_ args:tt
+                ]
+
+                // Our accumulator. We'll push aliases here
+                $_ ( [ $_($_ accumulated:tt)* ], ) *
+            ) => {
+                $_ next_alias! { %
+                    // arguments to create the next alias
+                    $_ args
+
+                    // the aliases we collected
+                    $_ ( [ $_($_ accumulated)* ], ) *
+
+                    // add our own aliases to top of the stack
+                    $( [$($derives)*], )*
+                }
+            };
+
+            // BASE CASE: Reached end of the alias accumulation, create
+            (%
+                [ $_ ($_ tt:tt)* ]
+
+                $_ ( [ $_($_ accumulated:tt)* ], ) *
+            ) => {
+                // create the alias
+                $crate::__internal_new_alias! {
+                    // all existing arguments
+                    $_ ( $_ tt )*
+
+                    // the aliases we collected
+                    $_ ( [ $_($_ accumulated)* ], ) *
+
+                    // add our own aliases to top of the stack
+                    $( [$($derives)*], )*
+                }
             };
         }
     }
