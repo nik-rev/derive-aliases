@@ -1,7 +1,7 @@
 [package]
-name = "derive_aliases_impl"
+name = "derive_aliases"
 description = "`#[derive]` aliases for reducing code boilerplate"
-version = "0.1.0"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Nik Revenco <pm@nikrev.com>"]
@@ -10,16 +10,5 @@ license = "MIT OR Apache-2.0"
 keywords = ["macros", "derive", "alias"]
 readme = "../README.md"
 
-[workspace]
-members = [".", "new_alias"]
-
-[lib]
-proc-macro = true
-
 [dependencies]
-# note: this is only called if we'd get compiler errors anyway (for better error messages), so I
-# still consider us to pull 0 dependencies
-strsim = "0.11"
-
-[dev-dependencies]
-docstr = "0.4"
+derive_aliases_impl = { path = "..", version = "0.1" }

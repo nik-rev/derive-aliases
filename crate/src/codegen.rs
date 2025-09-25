@@ -53,52 +53,6 @@ pub fn use_underscore_keep_span(
     ]
 }
 
-/// `.into_iter()` generates `compile_error!($message)` at `$span`
-pub struct CompileError {
-    /// Where the compile error is generates
-    pub span: Span,
-    /// Message of the compile error
-    pub message: String,
-}
-
-impl CompileError {
-    /// Create a new compile error
-    pub fn new(span: Span, message: impl AsRef<str>) -> Self {
-        Self {
-            span,
-            message: message.as_ref().to_string(),
-        }
-    }
-}
-
-impl IntoIterator for CompileError {
-    type Item = TokenTree;
-    type IntoIter = std::array::IntoIter<Self::Item, 3>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        [
-            TokenTree::Ident(Ident::new("compile_error", self.span)),
-            TokenTree::Punct({
-                let mut punct = Punct::new('!', Spacing::Alone);
-                punct.set_span(self.span);
-                punct
-            }),
-            TokenTree::Group({
-                let mut group = Group::new(Delimiter::Brace, {
-                    TokenStream::from_iter(vec![TokenTree::Literal({
-                        let mut string = Literal::string(&self.message);
-                        string.set_span(self.span);
-                        string
-                    })])
-                });
-                group.set_span(self.span);
-                group
-            }),
-        ]
-        .into_iter()
-    }
-}
-
 /// For a single derive, generate `#[std::derive(..)]` with `#[cfg_attr(.., std::derive(..))]` if there is at least 1 configuration predicate
 ///
 /// Generate one of:

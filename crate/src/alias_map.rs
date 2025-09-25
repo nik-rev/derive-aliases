@@ -58,16 +58,14 @@
 use std::{
     collections::HashMap,
     iter,
+    ops::IndexMut,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, OnceLock},
+    str::Chars,
+    sync::{Arc, OnceLock},
 };
 
-use proc_macro::{Literal, Span, TokenStream, TokenTree};
-
 use crate::{
-    chain,
-    codegen::{self, attr, punct},
-    dsl::{self, render_error, Alias, AliasDeclaration, ParseError, Stmt},
+    dsl::{self, render_error, AliasDeclaration, ParseError, Stmt},
     format_list, most_similar_alias,
 };
 
@@ -236,6 +234,379 @@ fn list_to_string_via_intersperse_with<T: ToString>(
     rendered
 }
 
+type Alias = String;
+type Cfg = String;
+type Cfgs = Vec<Cfg>;
+
+/// `::std::hash::Hash`
+#[derive(Debug, Eq, PartialEq)]
+struct Derive {
+    /// `true` if the leading colon is present
+    ///
+    /// ```
+    /// ::std::hash::Hash
+    /// ^^
+    /// ```
+    leading_colon: bool,
+    /// Each component of the derive, separated by `::`
+    ///
+    /// ```
+    /// ::std::hash::Hash
+    ///   ^^^  ^^^^  ^^^^
+    /// ```
+    components: Vec<String>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum Aliased {
+    Alias(String),
+    Derive(Derive),
+}
+
+/// When `derive_aliases::define!` runs, it writes to a file in the `/tmp` folder
+/// Every call to `derive_aliases::derive!` reads this file
+///
+/// This file contains compressed data about the derive aliases format,
+/// using a custom syntax.
+///
+/// Specifically, when using the `define!` syntax it looks like this:
+///
+/// ```
+/// #[cfg(foo)]
+/// #[cfg(bar)]
+/// Copy = Copy, Clone;
+/// Eq = PartialEq, #[cfg(bar)] Eq;
+/// Ord = Ord, PartialOrd, ..Eq;
+/// #[cfg(all(baz, quux))]
+/// All = Default, std::hash::Hash;
+/// ```
+///
+/// When writing to the file in `/tmp` we compress it like this:
+///
+/// ```
+/// [foo]
+/// [bar]
+/// Copy = Copy, Clone;
+/// Eq = PartialEq, [bar] Eq;
+/// Ord = Ord, PartialOrd, .Eq;
+/// [baz]
+/// [quux]
+/// All = Default, std:hash:Hash;
+/// ```
+///
+/// Observations:
+/// - Paths are `:` instead of `::`
+/// - The syntax for spreading an alias is `.` instead of `..`
+/// - only conentents inside of the `#[cfg(..)]` are kept in `[..]` for parsing simplicity. `[]` cannot
+///   appear inside of `cfg(<- ->)` so we use this to make our life much simpler
+/// - Also, all whitespace is removed fully so it's all on a single line
+/// - `#[cfg(all(baz, quux))]` is split into `[baz] [quux]` so we can apply optimizations on it at a later stage,
+///   as it is equivalent to `#[cfg(baz)]` `#[cfg(quux)]`
+///
+/// All of this is done because it makes parsing much simpler. The parsing is only done once per compilation
+/// session, so the gain in performance are negligible.
+///
+/// This function parses that structure above into the following map:
+///
+/// ```
+/// Copy => (["foo", "bar"], Derive(Copy)), (["foo", "bar"], Derive(Clone))
+/// Eq => ([] Derive(PartialEq)), (["bar"], Derive(Clone))
+/// Ord => ([], Derive(Ord)) ([], Derive(PartialOrd),) ([], Alias(Clone))
+/// Copy => (["baz"], Derive(Copy)), (["baz"], Derive(std::hash::Hash))
+/// ```
+///
+/// As you can see all `cfg` is removed from the alias and copied into each of its children.
+pub fn parse_data_format(data: &str) -> HashMap<Alias, Vec<(Cfgs, Aliased)>> {
+    let mut nested_alias_map = HashMap::<Alias, Vec<(Cfgs, Aliased)>>::new();
+
+    // We control the parsing and the stringification of the format.
+    // Hence we panic at any and every opportunity, without good error handling.
+    // The panics are bugs in the implementation!
+    use panic as bug;
+
+    // Alias declarations are delimited by ';'
+    //
+    // ASSUMPTION: `#[cfg(..)]` can never have `;` inside
+    for alias_declaration in data.split(';') {
+        let mut alias_declaration = alias_declaration.chars().peekable();
+
+        // Identifier representing the alias
+        //
+        // Alias = :std:hash:Hash, .Bar
+        // ^^^^^
+        let alias_name = alias_declaration
+            .by_ref()
+            .take_while(|it| it != &'=')
+            .collect::<String>();
+
+        // List of all collected aliaseds (derive or expansion of another alias)
+        let mut aliaseds = vec![];
+
+        // Parse ever single Aliased (Derive or Alias) on the RHS
+        //
+        // Alias = :std:hash:Hash, .Bar
+        //         ^^^^^^^^^^^^^^  ^^^^
+        loop {
+            let mut cfgs = Vec::new();
+
+            // Parse all of the `cfg` until there is no more
+            //  [...] [...] [...] ..Alias
+            //   ^^^
+            //         ^^^
+            //               ^^^
+            loop {
+                if alias_declaration.next_if_eq(&'[').is_none() {
+                    // Finished parsing a single attribute
+                    //
+                    //  [...]
+                    //       ^
+                    break;
+                }
+
+                let mut nesting_level = 0;
+
+                // Contents of a single `cfg`
+                //  [...]
+                //   ^^^
+                let mut cfg_contents = String::new();
+
+                // Parse a single `cfg`
+                loop {
+                    match alias_declaration.next() {
+                        Some('[') => {
+                            cfg_contents.push('[');
+                            nesting_level += 1;
+                        }
+                        Some(']') => {
+                            if nesting_level == 0 {
+                                break;
+                            }
+                            cfg_contents.push(']');
+                            nesting_level -= 1;
+                        }
+                        Some(ch) => {
+                            cfg_contents.push(ch);
+                        }
+                        None => {
+                            bug!("failed to parse `cfg`, it has uneven `[..]`")
+                        }
+                    };
+                }
+
+                // A single `cfg`
+                cfgs.push(cfg_contents);
+            }
+
+            if alias_declaration.next_if_eq(&'.').is_some() {
+                // Parsing an alias reference
+                //
+                // Alias = Foo, .Bar
+                //              ^^^
+                let derive_name = alias_declaration
+                    .by_ref()
+                    // no ';' because we split on it, so we reach end of the string
+                    // before ';'
+                    .take_while(|&ch| ch != ',')
+                    .collect::<String>();
+
+                aliaseds.push((Aliased::Alias(derive_name), cfgs));
+            } else {
+                // Parsing a derive reference
+                //
+                // Alias = :std:hash:Hash, .Bar
+                //         ^^^^^^^^^^^^^^
+                let leading_colon = alias_declaration.next_if_eq(&':').is_some();
+
+                let mut components = vec![];
+
+                // Parse all components
+                //
+                // Alias = :std:hash:Hash, .Bar
+                //          ^^^ ^^^^ ^^^^
+                loop {
+                    match alias_declaration.peek() {
+                        Some(&':') => {
+                            // Alias = :std:hash:Hash, .Bar
+                            //             ^    ^
+                            //
+                            // A path component. Proceed to the next one.
+                            continue;
+                        }
+                        Some(&',') => {
+                            // consume ','
+                            alias_declaration.next();
+
+                            // End of the current alias, but there are more
+                            //
+                            // Alias = :std:hash:Hash, .Bar
+                            //                       ^
+                            break;
+                        }
+                        // End of the declaration
+                        //
+                        // Alias = :std:hash:Hash, .Bar, :std:marker:Copy
+                        //                                               ^
+                        None => break,
+                        _ => (),
+                    }
+
+                    // A component of the path
+                    //
+                    // Alias = :std:hash:Hash, .Bar
+                    //          ^^^
+                    let component = alias_declaration
+                        .by_ref()
+                        // no ';' because we split on it, so we reach end of the string
+                        // before ';'
+                        .take_while(|&ch| ch != ',')
+                        .collect::<String>();
+
+                    components.push(component);
+                }
+
+                Derive {
+                    leading_colon,
+                    components,
+                };
+            }
+        }
+
+        let next = alias_declaration.next();
+        // debug_assert_eq!(next, Some('='));
+    }
+
+    nested_alias_map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use docstr::docstr;
+
+    #[test]
+    fn parsing() {
+        assert_eq!(
+            parse_data_format(
+                &docstr!(
+                     /// Hashes = :std:hash:Hash, std:hash:Hash;
+                     /// Bar = Baz;
+                     /// [feature = 'serde']
+                     /// [feature = 'hude']
+                     /// MyAlias = Foo, [feature = 'a'] [feature = 'b'] .Bar;
+                )
+                .split_whitespace()
+                .collect::<String>()
+            ),
+            HashMap::from([
+                (
+                    "Hashes".to_string(),
+                    vec![
+                        (
+                            vec![],
+                            Aliased::Derive(Derive {
+                                leading_colon: true,
+                                components: vec![
+                                    "std".to_string(),
+                                    "hash".to_string(),
+                                    "Hash".to_string()
+                                ],
+                            }),
+                        ),
+                        (
+                            vec![],
+                            Aliased::Derive(Derive {
+                                leading_colon: false,
+                                components: vec!["Clone".to_string()],
+                            }),
+                        ),
+                    ],
+                ),
+                (
+                    "Copy".to_string(),
+                    vec![
+                        (
+                            vec!["foo".to_string(), "bar".to_string()],
+                            Aliased::Derive(Derive {
+                                leading_colon: false,
+                                components: vec!["Copy".to_string()],
+                            }),
+                        ),
+                        (
+                            vec!["foo".to_string(), "bar".to_string()],
+                            Aliased::Derive(Derive {
+                                leading_colon: false,
+                                components: vec!["Clone".to_string()],
+                            }),
+                        ),
+                    ],
+                ),
+                (
+                    "Eq".to_string(),
+                    vec![
+                        (
+                            vec![],
+                            Aliased::Derive(Derive {
+                                leading_colon: false,
+                                components: vec!["PartialEq".to_string()],
+                            }),
+                        ),
+                        (
+                            vec!["bar".to_string()],
+                            Aliased::Derive(Derive {
+                                leading_colon: false,
+                                components: vec!["Eq".to_string()],
+                            }),
+                        ),
+                    ],
+                ),
+                (
+                    "Ord".to_string(),
+                    vec![
+                        (
+                            vec![],
+                            Aliased::Derive(Derive {
+                                leading_colon: false,
+                                components: vec!["Ord".to_string()],
+                            }),
+                        ),
+                        (
+                            vec![],
+                            Aliased::Derive(Derive {
+                                leading_colon: false,
+                                components: vec!["PartialOrd".to_string()],
+                            }),
+                        ),
+                        (vec![], Aliased::Alias("Eq".to_string())),
+                    ],
+                ),
+                (
+                    "All".to_string(),
+                    vec![
+                        (
+                            vec!["baz".to_string(), "quux".to_string()],
+                            Aliased::Derive(Derive {
+                                leading_colon: false,
+                                components: vec!["Default".to_string()],
+                            }),
+                        ),
+                        (
+                            vec!["baz".to_string(), "quux".to_string()],
+                            Aliased::Derive(Derive {
+                                leading_colon: false,
+                                components: vec![
+                                    "std".to_string(),
+                                    "hash".to_string(),
+                                    "Hash".to_string(),
+                                ],
+                            }),
+                        ),
+                    ],
+                ),
+            ])
+        );
+    }
+}
+
 /// Create the `AliasMap`
 ///
 /// Separate function for use in tests
@@ -243,6 +614,8 @@ pub fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Error
     // Recursive map of `Alias => (..Alias OR Derive)`, where `Derive` is a "leaf" but an `..Alias` can
     // be expanded into a list of (..Alias OR Derive)
     let (nested_alias_map, mut errors) = parse(content, path.as_ref());
+
+    let mut nested_alias_map = HashMap::<Alias, Vec<(Cfgs, Aliased)>>::new();
 
     // If there are syntax errors, it doesn't make sense to proceed
     if !errors.is_empty() {
@@ -266,26 +639,28 @@ pub fn generate_alias_map(content: &str, path: Arc<PathBuf>) -> (AliasMap, Error
     // (Vec<Cfg>, Derive) as all of the `Cfg`s are additive
     let mut flat_alias_map = FlatAliasMap::new();
 
-    for alias_decl in nested_alias_map.values() {
-        let mut current_cfg_stack = vec![];
-        let mut derives = vec![];
+    todo!();
 
-        // We keep a stack of aliases as we expand them, for better error messages
-        let mut alias_stack = vec![];
+    // for alias_decl in nested_alias_map.values() {
+    //     let mut current_cfg_stack = vec![];
+    //     let mut derives = vec![];
 
-        resolve_derives_for_alias(
-            alias_decl,
-            &nested_alias_map,
-            &mut current_cfg_stack,
-            &mut derives,
-            &mut errors,
-            path.clone(),
-            content,
-            &mut alias_stack,
-        );
+    //     // We keep a stack of aliases as we expand them, for better error messages
+    //     let mut alias_stack = vec![];
 
-        flat_alias_map.insert(alias_decl.alias.clone(), derives);
-    }
+    //     resolve_derives_for_alias(
+    //         alias_decl,
+    //         &nested_alias_map,
+    //         &mut current_cfg_stack,
+    //         &mut derives,
+    //         &mut errors,
+    //         path.clone(),
+    //         content,
+    //         &mut alias_stack,
+    //     );
+
+    //     flat_alias_map.insert(alias_decl.alias.clone(), derives);
+    // }
 
     // Now that we've got a flat map, it's not yet optimized for efficiency. Every `Derive` is associated with
     // multiple CFGs, and if we generated tokens as-is, we would be outputting an entire `#[cfg_attr]` for every single derive macro!
@@ -448,7 +823,7 @@ pub fn parse(content: &str, path: &Path) -> (HashMap<Alias, AliasDeclaration>, V
         for stmt in file.stmts {
             match stmt {
                 Stmt::AliasDeclaration(alias_declaration) => {
-                    alias_declarations.insert(alias_declaration.alias.clone(), alias_declaration);
+                    // alias_declarations.insert(alias_declaration.alias.clone(), alias_declaration);
                 }
                 Stmt::Import(import) => {
                     match std::fs::read_to_string(&*import.path) {
@@ -483,145 +858,145 @@ pub fn parse(content: &str, path: &Path) -> (HashMap<Alias, AliasDeclaration>, V
     (alias_declarations, errors)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::dsl::{self, Alias, Cfg, Derive, Ident, Span};
-    use std::{collections::HashMap, path::PathBuf, sync::Arc};
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::dsl::{self, Alias, Cfg, Derive, Ident, Span};
+//     use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-    fn generate_alias_map(content: &str) -> (AliasMap, Errors) {
-        super::generate_alias_map(content, Arc::new("derive_aliases.rs".into()))
-    }
+//     fn generate_alias_map(content: &str) -> (AliasMap, Errors) {
+//         super::generate_alias_map(content, Arc::new("derive_aliases.rs".into()))
+//     }
 
-    #[test]
-    fn generate_alias_map_basic_expansion() {
-        let content = stringify!(
-            A = B, C;
-            MyAlias = D, ..A;
-        );
+//     #[test]
+//     fn generate_alias_map_basic_expansion() {
+//         let content = stringify!(
+//             A = B, C;
+//             MyAlias = D, ..A;
+//         );
 
-        let (alias_map, errors) = generate_alias_map(content);
+//         let (alias_map, errors) = generate_alias_map(content);
 
-        assert!(errors.is_empty());
-        assert_eq!(alias_map.len(), 2);
+//         assert!(errors.is_empty());
+//         assert_eq!(alias_map.len(), 2);
 
-        // Check A's group
-        let a_derives = &alias_map[&Alias(Ident {
-            name: "A".to_string(),
-            span: dummy::span(),
-        })];
-        assert_eq!(a_derives.len(), 1);
-        let (cfgs, derives) = a_derives.iter().next().unwrap();
-        assert!(cfgs.is_empty());
-        assert_eq!(derives.len(), 2);
-        assert_eq!(derives[0].components.first.name, "B");
-        assert_eq!(derives[1].components.first.name, "C");
+//         // Check A's group
+//         let a_derives = &alias_map[&Alias(Ident {
+//             name: "A".to_string(),
+//             span: dummy::span(),
+//         })];
+//         assert_eq!(a_derives.len(), 1);
+//         let (cfgs, derives) = a_derives.iter().next().unwrap();
+//         assert!(cfgs.is_empty());
+//         assert_eq!(derives.len(), 2);
+//         assert_eq!(derives[0].components.first.name, "B");
+//         assert_eq!(derives[1].components.first.name, "C");
 
-        // Check MyAlias's group
-        let my_alias_derives = &alias_map[&Alias(Ident {
-            name: "MyAlias".to_string(),
-            span: dummy::span(),
-        })];
-        assert_eq!(my_alias_derives.len(), 1);
-        let (cfgs, derives) = my_alias_derives.iter().next().unwrap();
-        assert!(cfgs.is_empty());
-        assert_eq!(derives.len(), 3);
-        assert_eq!(derives[0].components.first.name, "D");
-        assert_eq!(derives[1].components.first.name, "B");
-        assert_eq!(derives[2].components.first.name, "C");
-    }
+//         // Check MyAlias's group
+//         let my_alias_derives = &alias_map[&Alias(Ident {
+//             name: "MyAlias".to_string(),
+//             span: dummy::span(),
+//         })];
+//         assert_eq!(my_alias_derives.len(), 1);
+//         let (cfgs, derives) = my_alias_derives.iter().next().unwrap();
+//         assert!(cfgs.is_empty());
+//         assert_eq!(derives.len(), 3);
+//         assert_eq!(derives[0].components.first.name, "D");
+//         assert_eq!(derives[1].components.first.name, "B");
+//         assert_eq!(derives[2].components.first.name, "C");
+//     }
 
-    #[test]
-    fn generate_alias_map_cfg_accumulation() {
-        let content = stringify!(
-            #[cfg(B)] B = D;
-            #[cfg(A)] A = C, ..B;
-        );
+//     #[test]
+//     fn generate_alias_map_cfg_accumulation() {
+//         let content = stringify!(
+//             #[cfg(B)] B = D;
+//             #[cfg(A)] A = C, ..B;
+//         );
 
-        let (alias_map, errors) = generate_alias_map(content);
+//         let (alias_map, errors) = generate_alias_map(content);
 
-        for e in &errors {
-            eprintln!("{e}");
-        }
+//         for e in &errors {
+//             eprintln!("{e}");
+//         }
 
-        assert!(errors.is_empty());
-        assert_eq!(alias_map.len(), 2);
+//         assert!(errors.is_empty());
+//         assert_eq!(alias_map.len(), 2);
 
-        // Check A's group, which should contain two derives with different cfg predicates
-        let a_derives = &alias_map[&Alias(Ident {
-            name: "A".to_string(),
-            span: dummy::span(),
-        })];
+//         // Check A's group, which should contain two derives with different cfg predicates
+//         let a_derives = &alias_map[&Alias(Ident {
+//             name: "A".to_string(),
+//             span: dummy::span(),
+//         })];
 
-        assert_eq!(a_derives.len(), 2);
+//         assert_eq!(a_derives.len(), 2);
 
-        let mut expected_cfgs = HashMap::new();
-        expected_cfgs.insert(vec![dummy::cfg("A")], vec![dummy::derive("C")]);
-        expected_cfgs.insert(
-            vec![dummy::cfg("A"), dummy::cfg("B")],
-            vec![dummy::derive("D")],
-        );
+//         let mut expected_cfgs = HashMap::new();
+//         expected_cfgs.insert(vec![dummy::cfg("A")], vec![dummy::derive("C")]);
+//         expected_cfgs.insert(
+//             vec![dummy::cfg("A"), dummy::cfg("B")],
+//             vec![dummy::derive("D")],
+//         );
 
-        for (cfgs, derives) in a_derives {
-            let key = cfgs.clone();
+//         for (cfgs, derives) in a_derives {
+//             let key = cfgs.clone();
 
-            let mut derives_names: Vec<_> = derives
-                .iter()
-                .map(|d| d.components.first.name.clone())
-                .collect();
+//             let mut derives_names: Vec<_> = derives
+//                 .iter()
+//                 .map(|d| d.components.first.name.clone())
+//                 .collect();
 
-            derives_names.sort();
+//             derives_names.sort();
 
-            let mut expected_derives_names: Vec<_> = expected_cfgs[&key]
-                .iter()
-                .map(|d| d.components.first.name.clone())
-                .collect();
-            expected_derives_names.sort();
+//             let mut expected_derives_names: Vec<_> = expected_cfgs[&key]
+//                 .iter()
+//                 .map(|d| d.components.first.name.clone())
+//                 .collect();
+//             expected_derives_names.sort();
 
-            assert_eq!(derives_names, expected_derives_names);
-        }
-    }
+//             assert_eq!(derives_names, expected_derives_names);
+//         }
+//     }
 
-    #[test]
-    fn alias_not_found_error() {
-        let content = stringify!(MyAlias = ..MissingAlias;);
-        let (_alias_map, errors) = generate_alias_map(content);
+//     #[test]
+//     fn alias_not_found_error() {
+//         let content = stringify!(MyAlias = ..MissingAlias;);
+//         let (_alias_map, errors) = generate_alias_map(content);
 
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("alias `MissingAlias` is undefined!"));
-    }
+//         assert_eq!(errors.len(), 1);
+//         assert!(errors[0].contains("alias `MissingAlias` is undefined!"));
+//     }
 
-    // create dummy data
-    mod dummy {
-        use super::*;
+//     // create dummy data
+//     mod dummy {
+//         use super::*;
 
-        pub fn span() -> Span {
-            Span {
-                location: 0..0,
-                file: Arc::new(PathBuf::from("derive_aliases.rs")),
-            }
-        }
+//         pub fn span() -> Span {
+//             Span {
+//                 location: 0..0,
+//                 file: Arc::new(PathBuf::from("derive_aliases.rs")),
+//             }
+//         }
 
-        pub fn cfg(content: &str) -> Cfg {
-            Cfg {
-                span: span(),
-                _keyword: dsl::token::Cfg(span()),
-                cfg: content.to_string(),
-            }
-        }
+//         pub fn cfg(content: &str) -> Cfg {
+//             Cfg {
+//                 span: span(),
+//                 _keyword: dsl::token::Cfg(span()),
+//                 cfg: content.to_string(),
+//             }
+//         }
 
-        pub fn derive(name: &str) -> Derive {
-            Derive {
-                _span: dummy::span(),
-                leading_colon: None,
-                components: dsl::Separated {
-                    first: Ident {
-                        name: name.to_string(),
-                        span: dummy::span(),
-                    },
-                    items: Vec::new(),
-                },
-            }
-        }
-    }
-}
+//         pub fn derive(name: &str) -> Derive {
+//             Derive {
+//                 _span: dummy::span(),
+//                 leading_colon: None,
+//                 components: dsl::Separated {
+//                     first: Ident {
+//                         name: name.to_string(),
+//                         span: dummy::span(),
+//                     },
+//                     items: Vec::new(),
+//                 },
+//             }
+//         }
+//     }
+// }

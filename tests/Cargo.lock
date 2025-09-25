@@ -6,6 +6,13 @@ version = 4
 name = "derive_aliases"
 version = "0.2.2"
 dependencies = [
+ "derive_aliases_impl",
+]
+
+[[package]]
+name = "derive_aliases_impl"
+version = "0.1.0"
+dependencies = [
  "strsim",
 ]
 

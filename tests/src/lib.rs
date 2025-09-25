@@ -1,3 +1,4 @@
+#![allow(warnings)]
 // mod derive_aliases_doc;
 
 // derive_aliases::define! {
@@ -21,35 +22,65 @@
 
 //     #[cfg(feature = "serde")]
 //     Together = PartialOrd, std::hash::Hash;
+//
+
+// ::derive_aliases::__internal_new_alias! {
+//     __derive_alias_Ord
+//     $Ord![::core ::cmp
+//     ::Eq],[::core ::cmp
+//     ::Ord],[::core ::cmp ::PartialOrd],[::core ::cmp ::PartialEq],
+// }
+// ::derive_aliases::__internal_new_alias! {
+//     __derive_alias_Eq $Eq![::core ::cmp ::PartialEq],[::core ::cmp ::Eq],
+// }
+// ::derive_aliases::__internal_new_alias! {
+//     __derive_alias_AndMore
+//     $AndMore![::core ::cmp
+//     ::Eq],[::core ::default
+//     ::Default],[::core ::cmp
+//     ::PartialOrd],[::core ::cmp
+//     ::PartialEq],[::core ::marker
+//     ::Copy],[::core ::clone
+//     ::Clone],[::core ::cmp ::Ord],[::std ::hash ::Hash],
+// }
+// ::derive_aliases::__internal_new_alias! {
+//     __derive_alias_Everything
+//     $Everything![::core ::default
+//     ::Default],[::core ::marker
+//     ::Clone],[::core ::marker
+//     ::Copy],[::std ::hash
+//     ::Hash],[::core ::cmp
+//     ::PartialOrd],[::core ::cmp
+//     ::Ord],[::core ::cmp ::PartialEq],[::core ::cmp ::Eq],
 // }
 
 derive_aliases::define! {
-    // extern use foo::bar;
+    Eq = ::core::cmp::PartialEq, ::core::cmp::Eq;
 
-    Eq = PartialEq, Eq;
+    Ord = ::core::cmp::PartialOrd, ::core::cmp::Ord, ..Eq;
 
-    Ord = PartialOrd, Ord, ..Eq;
+    Everything = ::std::hash::Hash, ..Ord, ::core::marker::Copy, ::core::clone::Clone, ::core::default::Default;
 
-    Everything = ::std::hash::Hash, ..Ord, Copy, Clone, Default;
+    AndMore = ..Ord, ::core::marker::Copy, ::core::clone::Clone, ::core::default::Default, ::std::hash::Hash;
 }
 
-macro_rules! implements_traits {
-    ($name:ident #[$($input:tt)*] => $($($segment:ident)::*),*) => {
-        mod $name {
-            #[derive_aliases::derive($($input)*)]
-            pub struct A(());
-        }
+// macro_rules! implements_traits {
+//     ($name:ident #[$($input:tt)*] => $($($segment:ident)::*),*) => {
+//         mod $name {
+//             #[derive_aliases::derive($($input)*)]
+//             pub struct A(());
+//         }
 
-        // HACK: since we can't use `+` as repetition separator
-        #[allow(warnings, reason = "only for type check")]
-        fn $name<A: $($($segment)::* +)* Sized>() {
-            $name::<$name::A>();
-        }
-    };
-}
+//         // HACK: since we can't use `+` as repetition separator
+//         #[allow(warnings, reason = "only for type check")]
+//         fn $name<A: $($($segment)::* +)* Sized>() {
+//             $name::<$name::A>();
+//         }
+//     };
+// }
 
-// Simple alias
-implements_traits!(a #[..Eq] => Eq, PartialEq);
+// // Simple alias
+// implements_traits!(a #[..Eq] => Eq, PartialEq);
 
 // // Alias with custom type
 // implements_traits!(b #[..Copy, std::hash::Hash] => Copy, Clone, std::hash::Hash);
