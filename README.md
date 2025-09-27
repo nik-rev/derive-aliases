@@ -2,104 +2,100 @@
 
 <!-- cargo-rdme start -->
 
-[<img alt="crates.io" src="https://img.shields.io/crates/v/derive-aliases?style=for-the-badge" height="25">](https://crates.io/crates/derive-aliases)
-[<img alt="github" src="https://img.shields.io/badge/github-derive--aliases-blue?style=for-the-badge" height="25">](https://github.com/nik-rev/derive-aliases)
-[<img alt="docs.rs" src="https://img.shields.io/docsrs/derive-aliases?style=for-the-badge" height="25">](https://docs.rs/derive-aliases)
+[![crates.io](https://img.shields.io/crates/v/derive_aliases?style=flat-square&logo=rust)](https://crates.io/crates/derive_aliases)
+[![docs.rs](https://img.shields.io/badge/docs.rs-derive_aliases-blue?style=flat-square&logo=docs.rs)](https://docs.rs/derive_aliases)
+![license](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue?style=flat-square)
+![msrv](https://img.shields.io/badge/msrv-1.56-blue?style=flat-square&logo=rust)
+[![github](https://img.shields.io/github/stars/nik-rev/derive_aliases)](https://github.com/nik-rev/derive-aliases)
 
-This crate provides `#[derive]` aliases for reducing code boilerplate.
+This crate improves Rust's `derive` macro by supporting user-defined Derive aliases.
 
-# Features
-
-- Intuitive, simple syntax
-  - Create alias: `Copy = Copy, Clone`
-  - Use alias: `#[derive(Debug, ..Copy)]` expands to `#[std::derive(Debug, Copy, Clone)]`
-- Very fast compile times, we don't pull *any* dependencies as our parsing logic is very simple
-- Hovering on the aliases shows you documentation on what they expand into
-- When you have 2 aliases that both try to derive the same trait, it won't be a compile error. The derives will be nicely merged together.
-- You don't need to import it in every module! With `#[macro_use] extern crate derive_aliases` at the top of `lib.rs`, the standard library `derive` is globally replaced by `derive_aliases::derive`
-
-# Usage
-
-Aliases are defined in a special file `derive_aliases.rs`, located next to your **crate**'s `Cargo.toml`:
-
-```rs
-// Simple derive aliases
-//
-// `#[derive(..Copy, ..Eq)]` expands to `#[std::derive(Copy, Clone, PartialEq, Eq)]`
-
-Copy = Copy, Clone;
-Eq = PartialEq, Eq;
-
-// You can nest them!
-//
-// `#[derive(..Ord, std::hash::Hash)]` expands to `#[std::derive(PartialOrd, Ord, PartialEq, Eq, std::hash::Hash)]`
-
-Ord = PartialOrd, Ord, ..Eq;
+```toml
+[dependencies]
+derive_aliases = "0.3"
 ```
 
-This file uses a tiny domain-specific language for defining the derive aliases (the parser is less than 20 lines of code!). `.rs` is used just for syntax highlighting.
-These aliases can then be used in Rust like so:
+## Usage
 
-```rs
-// This globally overrides `std::derive` with `derive_aliases::derive` across the whole crate! Handy.
+Define aliases uses `define!`, and use them with `#[derive]`:
+
+```rust
+mod derive_alias {
+    // Defines 3 aliases: `..Eq`, `..Ord` and `..Copy`
+    derive_aliases::define! {
+        Eq   = ::core::cmp::PartialEq, ::core::cmp::Eq;
+        Ord  = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
+        Copy = ::core::marker::Copy, ::core::clone::Clone;
+        //^^
+        // aliases
+        //
+        //     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        //      what each individual alias expands to
+    }
+}
+
+use derive_aliases::derive;
+
+// Use the aliases:
+#[derive(Debug, ..Ord, ..Copy)]
+struct User;
+```
+
+The above expands to this:
+
+```rust
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
+struct User;
+```
+
+## IDE Support
+
+One of my biggest goals with this crate was strong IDE Support and fast compile-times.
+Hovering over an alias `#[derive(..Alias)]` shows *exactly* what it expands into, and even Goto Definition directly brings you where the alias is defined.
+
+## Tip
+
+To globally override `#[std::derive]` with `#[derive_aliases::derive]`, add the following:
+
+```rust
 #[macro_use]
 extern crate derive_aliases;
-
-#[derive(..Copy, ..Ord, std::hash::Hash)]
-struct HelloWorld;
 ```
 
-This expands to:
+The above lets you [`define!`] aliases and then use them anywhere in your crate!
 
-```rs
-#[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq, std::hash::Hash)]
-struct HelloWorld;
+I have put a **ton** of effort into optimizing `derive_aliases` to be as zero-cost as possible in terms of compile-time over the standard library's `derive`,
+so don't worry about any overhead of `#[derive_aliases::derive]` even when no aliases are used! `derive_aliases` has 0 dependencies (not even `quote` or `syn`!)
+
+## Details
+
+All derive aliases must exist at your `crate::derive_aliases`, so invoke the `derive_aliases::define!` macro there.
+
+You can define aliases in 1 crate, and use them from another. You can break `define!` apart into multiple definitions:
+
+```rust
+mod derive_alias {
+    mod foo {
+        derive_aliases::define! {
+            Eq = ::core::cmp::Eq, ::core::cmp::PartialEq;
+            Ord = ::core::cmp::PartialOrd, ::core::cmp::Ord, ..Eq;
+        }
+    }
+    mod bar {
+        derive_aliases::define! {
+            Copy = ::core::marker::Copy, ::core::clone::Clone;
+            StdTraits = ..Eq, ..Ord, ..Copy, ::core::fmt::Debug, ::core::hash::Hash;
+        }
+    }
+
+    pub use foo::{Eq, Ord};
+    pub use bar::{Copy, StdTraits};
+}
+
+#[derive(..StdTraits)]
+struct User;
 ```
 
-# Documentation on hover
+The above Just Works. Most importantly, derive aliases need to available at `crate::derive_alias`.
 
-With `Ord` alias defines as follows:
-
-```rs
-Eq = PartialEq, Eq;
-Ord = PartialOrd, Ord, ..Eq;
-```
-
-Hovering over `..Ord` will show that it expands to `PartialOrd, Ord, PartialEq, Eq`:
-
-![hovering shows docs](https://github.com/nik-rev/derive-aliases/blob/main/docs.png?raw=true)
-
-# `use` other alias files in `derive_aliases.rs`
-
-`use` followed by a path will inline the derive aliases located in that file.
-
-If `../my_other_aliases.rs` contains:
-
-```rs
-Ord = PartialOrd, Ord, ..Eq;
-```
-
-And your `derive_aliases.rs` has:
-
-```rs
-use "../my_other_aliases.rs";
-
-Eq = PartialEq, Eq;
-```
-
-Then it will inline the aliases in the other file, expanding to:
-
-```rs
-Ord = PartialOrd, Ord, ..Eq;
-Eq = PartialEq, Eq;
-```
-
-# Minimum Supported Rust Version (MSRV)
-
-1.80
-
-# Alternatives
-
-- [`macro_rules_attribute`](https://docs.rs/macro_rules_attribute/latest/macro_rules_attribute/macro.derive_alias.html)
-- [`derive_alias`](https://docs.rs/derive-alias/latest/derive_alias/)
-
+<!-- cargo-rdme end -->

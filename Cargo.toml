@@ -10,7 +10,7 @@ authors = ["Nik Revenco <pm@nikrev.com>"]
 repository = "https://github.com/nik-rev/derive-aliases"
 license = "MIT OR Apache-2.0"
 keywords = ["macros", "derive", "alias"]
-readme = "../README.md"
+readme = "README.md"
 
 [dependencies]
 derive_aliases_proc_macro = { path = "proc_macro", version = "0.1", features = ["show"] }
