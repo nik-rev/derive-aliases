@@ -6,7 +6,6 @@ use proc_macro::{Literal, Spacing};
 use std::collections::HashSet;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
-use std::iter;
 
 /// Define derive aliases that can be used in [`#[derive]`](derive)
 // when doing `#[macro_use] extern crate proc` we will also globally import this macro
@@ -389,89 +388,62 @@ pub fn define(tts: TokenStream) -> TokenStream {
         flat_alias_map.insert(alias_name, (alias_name_span, flat_derives, extern_aliases));
     }
 
-    // Finally let's expand all of this to a bunch of invocations of the `__internal_new_alias!` macro
+    // Finally let's expand all of this to a bunch of invocations of the `__internal_derive_aliases_new_alias!` macro
     flat_alias_map
         .into_iter()
         .flat_map(|(alias, (_alias_span, derives, mut extern_aliases))| {
-            let input_tt = TokenStream::from_iter(
+            let input_tt = [
+                TokenTree::Ident(Ident::new(&format!("__derive_alias_{alias}"), *_alias_span)),
+                TokenTree::Punct(Punct::new('$', proc_macro::Spacing::Alone)),
+                TokenTree::Ident(Ident::new(alias, Span::call_site())),
+                TokenTree::Punct(Punct::new('!', proc_macro::Spacing::Joint)),
+            ]
+            .into_iter()
+            .chain(derives.iter().flat_map(|derive| {
                 [
-                    TokenTree::Literal(Literal::string(&generate_documentation_for_alias(
-                        alias, &derives,
-                    ))),
-                    TokenTree::Ident(Ident::new(&format!("__derive_alias_{alias}"), *_alias_span)),
-                    TokenTree::Punct(Punct::new('$', proc_macro::Spacing::Alone)),
-                    TokenTree::Ident(Ident::new(alias, Span::call_site())),
-                    TokenTree::Punct(Punct::new('!', proc_macro::Spacing::Joint)),
-                ]
-                .into_iter()
-                .chain(derives.iter().flat_map(|derive| {
-                    [
-                        TokenTree::Group(Group::new(
-                            Delimiter::Bracket,
-                            TokenStream::from_iter(
+                    TokenTree::Group(Group::new(
+                        Delimiter::Bracket,
+                        TokenStream::from_iter(
+                            [
+                                // path separator `::`
+                                // since we know the path to derive is ALWAYS an absolute path
+                                //
+                                // ::std::hash::HashMap
+                                // ^^
+                                TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
+                                TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
+                                // first path segment
+                                //
+                                // ::std::hash::HashMap
+                                //   ^^^
+                                TokenTree::Ident(derive.first_component.clone()),
+                            ]
+                            .into_iter()
+                            .chain(derive.components.iter().flat_map(|(_colon, component)| {
                                 [
                                     // path separator `::`
-                                    // since we know the path to derive is ALWAYS an absolute path
                                     //
                                     // ::std::hash::HashMap
-                                    // ^^
+                                    //      ^^    ^^
                                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
                                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                                    // first path segment
+                                    // path segment
                                     //
                                     // ::std::hash::HashMap
-                                    //   ^^^
-                                    TokenTree::Ident(derive.first_component.clone()),
+                                    //        ^^^^  ^^^^^^^
+                                    TokenTree::Ident(Ident::new(
+                                        &component.to_string(),
+                                        component.span(),
+                                    )),
                                 ]
-                                .into_iter()
-                                .chain(
-                                    derive.components.iter().flat_map(|(_colon, component)| {
-                                        [
-                                            // path separator `::`
-                                            //
-                                            // ::std::hash::HashMap
-                                            //      ^^    ^^
-                                            TokenTree::Punct(Punct::new(
-                                                ':',
-                                                proc_macro::Spacing::Joint,
-                                            )),
-                                            TokenTree::Punct(Punct::new(
-                                                ':',
-                                                proc_macro::Spacing::Joint,
-                                            )),
-                                            // path segment
-                                            //
-                                            // ::std::hash::HashMap
-                                            //        ^^^^  ^^^^^^^
-                                            TokenTree::Ident(Ident::new(
-                                                &component.to_string(),
-                                                component.span(),
-                                            )),
-                                        ]
-                                    }),
-                                ),
-                            ),
-                        )),
-                        TokenTree::Punct(Punct::new(',', proc_macro::Spacing::Joint)),
-                    ]
-                })),
-            );
+                            })),
+                        ),
+                    )),
+                    TokenTree::Punct(Punct::new(',', proc_macro::Spacing::Joint)),
+                ]
+            }));
 
-            let other = if let Some(last_alias) = extern_aliases.pop() {
-                let inner_stream = extern_aliases.into_iter().fold(input_tt, |acc, alias| {
-                    TokenStream::from_iter([
-                        TokenTree::Ident(Ident::new("crate", Span::call_site())),
-                        TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                        TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                        TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
-                        TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                        TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                        TokenTree::Ident(alias),
-                        TokenTree::Punct(Punct::new(',', proc_macro::Spacing::Joint)),
-                        TokenTree::Group(Group::new(Delimiter::Bracket, acc)),
-                    ])
-                });
-
+            if let Some(last_extern_alias) = extern_aliases.pop() {
                 TokenStream::from_iter([
                     TokenTree::Ident(Ident::new("crate", Span::call_site())),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
@@ -479,13 +451,52 @@ pub fn define(tts: TokenStream) -> TokenStream {
                     TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                    TokenTree::Ident(last_alias),
+                    TokenTree::Ident(last_extern_alias),
                     TokenTree::Punct(Punct::new('!', proc_macro::Spacing::Joint)),
                     TokenTree::Group(Group::new(
                         Delimiter::Brace,
                         TokenStream::from_iter([
                             TokenTree::Punct(Punct::new('%', Spacing::Joint)),
-                            TokenTree::Group(Group::new(Delimiter::Bracket, inner_stream)),
+                            TokenTree::Group(Group::new(
+                                Delimiter::Bracket,
+                                extern_aliases.into_iter().fold(
+                                    TokenStream::from_iter(input_tt),
+                                    |acc, alias| {
+                                        TokenStream::from_iter([
+                                            TokenTree::Ident(Ident::new(
+                                                "crate",
+                                                Span::call_site(),
+                                            )),
+                                            TokenTree::Punct(Punct::new(
+                                                ':',
+                                                proc_macro::Spacing::Joint,
+                                            )),
+                                            TokenTree::Punct(Punct::new(
+                                                ':',
+                                                proc_macro::Spacing::Joint,
+                                            )),
+                                            TokenTree::Ident(Ident::new(
+                                                "derive_alias",
+                                                Span::call_site(),
+                                            )),
+                                            TokenTree::Punct(Punct::new(
+                                                ':',
+                                                proc_macro::Spacing::Joint,
+                                            )),
+                                            TokenTree::Punct(Punct::new(
+                                                ':',
+                                                proc_macro::Spacing::Joint,
+                                            )),
+                                            TokenTree::Ident(alias),
+                                            TokenTree::Punct(Punct::new(
+                                                ',',
+                                                proc_macro::Spacing::Joint,
+                                            )),
+                                            TokenTree::Group(Group::new(Delimiter::Bracket, acc)),
+                                        ])
+                                    },
+                                ),
+                            )),
                         ]),
                     )),
                 ])
@@ -496,13 +507,23 @@ pub fn define(tts: TokenStream) -> TokenStream {
                     TokenTree::Ident(Ident::new("derive_aliases", Span::call_site())),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                    TokenTree::Ident(Ident::new("__internal_new_alias", Span::call_site())),
+                    TokenTree::Ident(Ident::new(
+                        "__internal_derive_aliases_new_alias",
+                        Span::call_site(),
+                    )),
                     TokenTree::Punct(Punct::new('!', proc_macro::Spacing::Joint)),
-                    TokenTree::Group(Group::new(Delimiter::Brace, input_tt)),
+                    TokenTree::Group(Group::new(
+                        Delimiter::Brace,
+                        TokenStream::from_iter(
+                            [TokenTree::Literal(Literal::string(
+                                &generate_documentation_for_alias(alias, &derives),
+                            ))]
+                            .into_iter()
+                            .chain(input_tt),
+                        ),
+                    )),
                 ])
-            };
-
-            TokenStream::from_iter(iter::empty().chain(other))
+            }
         })
         .chain(compile_errors)
         .chain(alias_use_stmts)
@@ -736,6 +757,24 @@ struct Path {
 }
 
 impl Path {
+    fn into_tokens(self) -> impl Iterator<Item = TokenTree> {
+        self.leading_colon
+            .map(PathSeparator::into_tokens)
+            .into_iter()
+            .flatten()
+            .chain([TokenTree::Ident(self.first_component)])
+            .chain(
+                self.components
+                    .into_iter()
+                    .flat_map(|(separator, segment)| {
+                        separator
+                            .into_tokens()
+                            .into_iter()
+                            .chain(std::iter::once(TokenTree::Ident(segment)))
+                    }),
+            )
+    }
+
     /// Requires the `ts` to start with `::segment` (absolute) or `segment` (relative), then
     /// expects 0 or more `::segment`s followed by whatever (once we hit "whatever", stops trying to parse further)
     ///
@@ -814,6 +853,142 @@ impl Path {
     }
 }
 
+/// The macro **created** by `new_alias!` handles de-duplication just fine using a TT muncher. But the derives passed to `new_alias!` **must not**
+/// have any duplicates in them. This can happen if the alias refers to an "extern alias" (alias defined outside of this `define!` call), like here:
+///
+/// ```ignore
+/// derive_aliases::define! {
+///     Eq = ::core::cmp::Eq, ::core::cmp::PartialEq;
+/// }
+/// derive_aliases::define! {
+///     EqEq = ..Eq, ..Eq;
+/// }
+/// ```
+///
+/// The above generates this, which contains duplicated derive paths:
+///
+/// ```ignore
+/// crate::__internal_derive_aliases_new_alias! {
+///     "..." __derive_alias_EqEq $ EqEq! [::core::cmp::Eq],[::core::cmp::PartialEq],[::core::cmp::Eq],[::core::cmp::PartialEq],
+/// }
+/// ```
+///
+/// So instead of that, we nest the arguments inside of a call to this macro, which de-duplicates the derives we pass to `new_alias!`:
+///
+/// ```ignore
+/// crate::__internal_derive_aliases_new_alias_with_externs! {
+///     __derive_alias_EqEq $ EqEq!
+///     [::core::cmp::Eq],[::core::cmp::PartialEq],[::core::cmp::Eq],[::core::cmp::PartialEq],
+/// }
+/// ```
+///
+/// This expands to this:
+///
+/// ```ignore
+/// crate::__internal_derive_aliases_new_alias! {
+///     "..." __derive_alias_EqEq $ EqEq! [::core::cmp::Eq],[::core::cmp::PartialEq],
+/// }
+/// ```
+///
+/// Originally, this macro was just a TT muncher. However, to accurately generate the documentation `"..."` I made it
+/// into a proc macro, so it also generates the `"..."` based off the aliases it contains
+#[doc(hidden)]
+#[proc_macro]
+pub fn __internal_derive_aliases_new_alias_with_externs(ts: TokenStream) -> TokenStream {
+    let mut ts = ts.into_iter().peekable();
+
+    // __derive_alias_EqEq
+    let real_alias_name = match ts.next() {
+        Some(TokenTree::Ident(ident)) => ident,
+        _ => unreachable!("first token is the actual name of the `macro_rules!` alias"),
+    };
+
+    // $
+    let dollar = match ts.next() {
+        Some(TokenTree::Punct(punct)) if punct == '$' => punct,
+        _ => unreachable!("second token is dollar for generating macro from macro"),
+    };
+
+    // EqEq
+    let alias = match ts.next() {
+        Some(TokenTree::Ident(ident)) => ident,
+        _ => unreachable!("third token is name of the actual alias"),
+    };
+
+    // !
+    let exclam = match ts.next() {
+        Some(TokenTree::Punct(punct)) if punct == '!' => punct,
+        _ => unreachable!("fourth token is the `!`"),
+    };
+
+    // [::core::cmp::Eq],[::core::cmp::PartialEq],[::core::cmp::Eq],[::core::cmp::PartialEq],
+    let mut paths = HashSet::new();
+
+    // consume `[$($path:tt)*],` until there are none left
+    while let Some(tt) = ts.next() {
+        let mut group = match tt {
+            TokenTree::Group(group) if group.delimiter() == Delimiter::Bracket => {
+                group.stream().into_iter().peekable()
+            }
+            _ => unreachable!("every path is enclosed inside of `[...]`"),
+        };
+
+        paths.insert(
+            Path::parse(Span::call_site(), &mut group)
+                .expect("inside of `[...]` has an absolute path"),
+        );
+
+        match ts.next() {
+            Some(TokenTree::Punct(punct)) if punct == ',' => (),
+            _ => unreachable!("after the path `[...]` we always have a comma `,`"),
+        }
+    }
+
+    // the inner stream passed to the actual `new_alias!`
+    // with these changes:
+    // - de-duplicated alias
+    // - contains the real documentation
+    let stream = TokenStream::from_iter(
+        // lets re-construct the actual path
+        [
+            TokenTree::Literal(Literal::string(&generate_documentation_for_alias(
+                &alias.to_string(),
+                &paths,
+            ))),
+            TokenTree::Ident(real_alias_name),
+            TokenTree::Punct(dollar),
+            TokenTree::Ident(alias),
+            TokenTree::Punct(exclam),
+        ]
+        .into_iter()
+        // now at the end we just add all of the tokens
+        .chain(paths.into_iter().flat_map(|path| {
+            // every path and its comma
+            [
+                TokenTree::Group(Group::new(
+                    Delimiter::Bracket,
+                    TokenStream::from_iter(path.into_tokens()),
+                )),
+                TokenTree::Punct(Punct::new(',', Spacing::Joint)),
+            ]
+        })),
+    );
+
+    TokenStream::from_iter([
+        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+        TokenTree::Ident(Ident::new("derive_aliases", Span::call_site())),
+        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+        TokenTree::Ident(Ident::new(
+            "__internal_derive_aliases_new_alias",
+            Span::call_site(),
+        )),
+        TokenTree::Punct(Punct::new('!', Spacing::Joint)),
+        TokenTree::Group(Group::new(Delimiter::Brace, stream)),
+    ])
+}
+
 /// Separator in a path: `::`
 #[core::prelude::v1::derive(Clone, Debug)]
 struct PathSeparator {
@@ -821,6 +996,16 @@ struct PathSeparator {
     first: Span,
     /// Span of the second `:`
     second: Span,
+}
+
+impl PathSeparator {
+    fn into_tokens(self) -> [TokenTree; 2] {
+        let mut first = Punct::new(':', Spacing::Joint);
+        first.set_span(self.first);
+        let mut second = Punct::new(':', Spacing::Joint);
+        second.set_span(self.second);
+        [TokenTree::Punct(first), TokenTree::Punct(second)]
+    }
 }
 
 impl Hash for Path {
@@ -863,6 +1048,7 @@ impl fmt::Display for Path {
 }
 
 /// `.into_iter()` generates `compile_error!($message)` at `$span`
+#[std::prelude::v1::derive(Debug)]
 struct CompileError {
     /// Where the compile error is generates
     pub span: Span,

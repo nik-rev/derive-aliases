@@ -1,6 +1,99 @@
-//! Implementation details for the `derive_aliases` crate
+//! [![crates.io](https://img.shields.io/crates/v/derive_aliases?style=flat-square&logo=rust)](https://crates.io/crates/derive_aliases)
+//! [![docs.rs](https://img.shields.io/badge/docs.rs-derive_aliases-blue?style=flat-square&logo=docs.rs)](https://docs.rs/derive_aliases)
+//! ![license](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue?style=flat-square)
+//! ![msrv](https://img.shields.io/badge/msrv-1.56-blue?style=flat-square&logo=rust)
+//! [![github](https://img.shields.io/github/stars/nik-rev/derive_aliases)](https://github.com/nik-rev/derive-aliases)
+//!
+//! This crate improves Rust's `derive` macro by supporting user-defined Derive aliases.
+//!
+//! ```toml
+//! [dependencies]
+//! derive_aliases = "0.3"
+//! ```
+//!
+//! # Usage
+//!
+//! Define aliases uses `define!`, and use them with `#[derive]`:
+//!
+//! ```
+//! use derive_aliases::derive;
+//!
+//! mod derive_alias {
+//!     derive_aliases::define! {
+//!         Eq = ::core::cmp::PartialEq, ::core::cmp::Eq;
+//!         Ord = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
+//!         Copy = ::core::marker::Copy, ::core::clone::Clone;
+//!     }
+//! }
+//!
+//! #[derive(Debug, ..Ord, ..Copy)]
+//! struct User;
+//! ```
+//!
+//! The above expands to this:
+//!
+//! ```
+//! #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
+//! struct User;
+//! ```
+//!
+//! # IDE Support
+//!
+//! One of my biggest goals with this crate was strong IDE Support and fast compile-times.
+//! Hovering over an alias `#[..Alias]` shows *exactly* what it expands into, and even Goto Definition directly brings you where the alias is defined.
+//!
+//! # Tip
+//!
+//! To globally override `#[std::derive]` with `#[derive_aliases::derive]`, add the following:
+//!
+//! ```
+//! #[macro_use]
+//! extern crate derive_aliases;
+//! ```
+//!
+//! The above lets you [`define!`] aliases and then use them anywhere in your crate!
+//!
+//! I have put a **ton** of effort into optimizing `derive_aliases` to be as zero-cost as possible in terms of compile-time over the standard library's `derive`,
+//! so don't worry about any overhead of `#[derive_aliases::derive]` even when no aliases are used! `derive_aliases` has 0 dependencies (not even `quote` or `syn`!)
+//!
+//! # Details
+//!
+//! All derive aliases must exist at your `crate::derive_aliases`, so invoke the `derive_aliases::define!` macro there.
+//!
+//! You can define aliases in 1 crate, and use them from another. You can break `define!` apart into multiple definitions:
+//!
+//! ```
+//! # use derive_aliases::derive;
+//! #
+//! mod derive_alias {
+//!     mod foo {
+//!         derive_aliases::define! {
+//!             Eq = ::core::cmp::Eq, ::core::cmp::PartialEq;
+//!             Ord = ::core::cmp::PartialOrd, ::core::cmp::Ord, ..Eq;
+//!         }
+//!     }
+//!     mod bar {
+//!         derive_aliases::define! {
+//!             Copy = ::core::marker::Copy, ::core::clone::Clone;
+//!             StdTraits = ..Eq, ..Ord, ..Copy, ::core::fmt::Debug, ::core::hash::Hash;
+//!         }
+//!     }
+//!
+//!     pub use foo::{Eq, Ord};
+//!     pub use bar::{Copy, StdTraits};
+//! }
+//!
+//! #[derive(..StdTraits)]
+//! struct User;
+//! ```
+//!
+//! The above Just Works. Most importantly, derive aliases need to available at `crate::derive_alias`.
 #![allow(clippy::crate_in_macro_def)]
 
+// The real user-interface of the crate.
+//
+// - `derive_aliases::define!` to define aliases
+// - `#[derive_aliases::deive]` is like `#[std::derive]` but also supports using aliases
 #[doc(inline)]
 pub use derive_aliases_proc_macro::{define, derive};
 
@@ -30,7 +123,7 @@ pub use derive_aliases_proc_macro::{define, derive};
 /// The first expansion is this:
 ///
 /// ```ignore
-/// ::derive_aliases::__internal_new_alias! {
+/// ::derive_aliases::__internal_derive_aliases_new_alias! {
 ///     "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq],
 /// }
 /// pub use __derive_alias_Eq as Eq;
@@ -63,7 +156,7 @@ pub use derive_aliases_proc_macro::{define, derive};
 ///   The `Ord` alias will expand to an invocation of `new_alias!` like this:
 ///
 ///   ```ignore
-///   ::derive_aliases::__internal_new_alias! {
+///   ::derive_aliases::__internal_derive_aliases_new_alias! {
 ///       "..." __derive_alias_Ord $ Ord! [::core::cmp::PartialEq], [::core::cmp::Eq], [::core::cmp::Ord], [::core::cmp::PartialOrd],
 ///   }
 ///   pub use __derive_alias_Ord as Ord;
@@ -86,7 +179,7 @@ pub use derive_aliases_proc_macro::{define, derive};
 /// Let's look at what `new_alias!` expands to now:
 ///
 /// ```ignore
-/// ::derive_aliases::__internal_new_alias! {
+/// ::derive_aliases::__internal_derive_aliases_new_alias! {
 ///     "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq],
 /// }
 /// pub use __derive_alias_Eq as Eq;
@@ -155,12 +248,12 @@ pub use derive_aliases_proc_macro::{define, derive};
 /// They'll expand to this:
 ///
 /// ```ignore
-/// ::derive_aliases::__internal_new_alias! {
+/// ::derive_aliases::__internal_derive_aliases_new_alias! {
 ///     "..." __derive_alias_Ord $ Ord! [::core::cmp::PartialEq], [::core::cmp::Eq], [::core::cmp::Ord], [::core::cmp::PartialOrd],
 /// }
 /// pub use __derive_alias_Ord as Ord;
 ///
-/// ::derive_aliases::__internal_new_alias! {
+/// ::derive_aliases::__internal_derive_aliases_new_alias! {
 ///     "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq],
 /// }
 /// pub use __derive_alias_Eq as Eq;
@@ -218,79 +311,9 @@ pub use derive_aliases_proc_macro::{define, derive};
 /// 1. Each alias REMOVES all the same aliases that exist from the list of aliases to expand to.
 /// 1. Once done, it adds it aliases to the end of the list
 /// 1. The process is repeated for each alias
-///
-/// # External aliases
-///
-/// We can do the "inlining" of aliases pretty easily when they are defined in the same `derive_aliases::define!` macro.
-/// However, when the aliases **are not** defined like this, (they might come from an external crate or module) - we must reference
-/// them by their path, e.g. `Ord`  would  be referenced as `crate::derive_alias::Eq`.
-///
-/// ```ignore
-/// derive_aliases::define! {
-///     Eq = ::core::cmp::Eq, ::core::cmp::PartialEq;
-/// }
-/// derive_aliases::define! {
-///     Ord = ::core::cmp::Ord, ::core::cmp::PartialOrd, ..Eq;
-///     Ord2 = ::core::cmp::Ord, ::core::cmp::PartialOrd, ..Eq, ..Eq;
-///     Ord3 = ::core::cmp::Ord, ::core::cmp::PartialOrd, ..Eq, ..Eq, ..Eq;
-/// }
-/// ```
-///
-/// The 1nd `Ord` expands like this:
-///
-/// ```ignore
-/// // 1 external alias
-/// crate::derive_alias::Eq! {%
-///     ["..." __derive_alias_Ord$Ord![::core::cmp::Ord],[::core::cmp::PartialOrd],]
-/// }
-/// // expansion:
-/// __internal_new_alias! {%
-///     "..." __derive_alias_Ord$Ord![::core::cmp::Ord],[::core::cmp::PartialOrd],[::core::cmp::PartialEq],[::core::cmp::Eq],
-/// }
-/// ```
-///
-/// The 2nd `Ord2` expands like this:
-///
-/// ```ignore
-/// // 2 external aliases
-/// crate::derive_alias::Eq! {%
-///     [crate::derive_alias::Eq,["..." __derive_alias_Ord2 $ Ord2![::core::cmp::Ord],[::core::cmp::PartialOrd],]]
-/// }
-/// // expansion:
-/// crate::derive_alias::Eq! {%
-///     ["..." __derive_alias_Ord2 $ Ord2! [::core::cmp::Ord],[::core::cmp::PartialOrd],][::core::cmp::PartialEq],[::core::cmp::Eq],
-/// }
-/// // expansion:
-/// crate::__internal_new_alias! {
-///     "..." __derive_alias_Ord2 $ Ord2! [::core::cmp::Ord],[::core::cmp::PartialOrd],[::core::cmp::PartialEq],[::core::cmp::Eq],[::core::cmp::PartialEq],[::core::cmp::Eq],
-/// }
-/// ```
-///
-/// The 3rd `Ord3` expands like this:
-///
-/// ```ignore
-/// // 3 external aliases
-/// crate::derive_alias::Eq! {%
-///     [crate::derive_alias::Eq,[crate::derive_alias::Eq,["..." __derive_alias_Ord 3 $Ord3![::core::cmp::Ord],[::core::cmp::PartialOrd],]]]
-/// }
-/// // expansion:
-/// crate::derive_alias::Eq! {%
-///     [crate::derive_alias::Eq,["..." __derive_alias_Ord3 $ Ord3![::core::cmp::Ord],[::core::cmp::PartialOrd],]][::core::cmp::PartialEq],[::core::cmp::Eq],
-/// }
-/// // expansion:
-/// crate::derive_alias::Eq! {%
-///     ["..." __derive_alias_Ord3 $ Ord3![::core::cmp::Ord],[::core::cmp::PartialOrd],][::core::cmp::PartialEq],[::core::cmp::Eq],[::core::cmp::PartialEq],[::core::cmp::Eq],
-/// }
-/// // expansion:
-/// __internal_new_alias! {
-///     "..." __derive_alias_Ord3 $ Ord3![::core::cmp::Ord],[::core::cmp::PartialOrd],[::core::cmp::PartialEq],[::core::cmp::Eq],[::core::cmp::PartialEq],[::core::cmp::Eq],[::core::cmp::PartialEq],[::core::cmp::Eq],
-/// }
-/// ```
-///
-/// As you can see, each nesting of `new_alias!` inside another alias just inserts additional `[$($path:tt)],` paths at the end. The `%` glyph tells the alias to do exactly this.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __internal_new_alias {
+macro_rules! __internal_derive_aliases_new_alias {
     (
         $docs:literal
         $real_name:ident
@@ -314,6 +337,7 @@ macro_rules! __internal_new_alias {
             ///////////////////////////////////////////////////////////////
 
             // Ord! { #Eq, (Copy, (@ [Debug, ] [struct Foo;])), [] [] }
+            //
             // PROCESSING COMPLETED. DELEGATE TO INNER ALIAS.
             //
             // We have removed all existing derives that COULD
@@ -439,6 +463,8 @@ macro_rules! __internal_new_alias {
             };
 
             ///////////////////////////////////////////////////////////////
+            // DONE
+            ///////////////////////////////////////////////////////////////
 
             // Now that we've removed the traits we want to add, Add them.
             // This guarantees there is NO duplicate of them here
@@ -479,11 +505,8 @@ macro_rules! __internal_new_alias {
 
                 // the item we are applying the derives to
                 $_ ($_ item) *
-
-                // compile_error!(stringify!($_($_ regular_derives )* $_($_ deduplicated)* $($derives)*));
-
-                // const NAMES: &str = stringify!($_($_ regular_derives )* $_($_ deduplicated)* $($derives)*);
             };
+
             // Remove each derive from the set
             $(
                 (?
@@ -651,7 +674,7 @@ macro_rules! __internal_new_alias {
                 $_ ( [ $_($_ accumulated:tt)* ], ) *
             ) => {
                 // create the alias
-                $crate::__internal_new_alias! {
+                $crate::__internal_derive_aliases_new_alias_with_externs! {
                     // all existing arguments
                     $_ ( $_ tt )*
 
@@ -665,3 +688,6 @@ macro_rules! __internal_new_alias {
         }
     }
 }
+
+#[doc(hidden)]
+pub use derive_aliases_proc_macro::__internal_derive_aliases_new_alias_with_externs;

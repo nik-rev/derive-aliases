@@ -1,5 +1,7 @@
 # `derive_aliases`
 
+<!-- cargo-rdme start -->
+
 [<img alt="crates.io" src="https://img.shields.io/crates/v/derive-aliases?style=for-the-badge" height="25">](https://crates.io/crates/derive-aliases)
 [<img alt="github" src="https://img.shields.io/badge/github-derive--aliases-blue?style=for-the-badge" height="25">](https://github.com/nik-rev/derive-aliases)
 [<img alt="docs.rs" src="https://img.shields.io/docsrs/derive-aliases?style=for-the-badge" height="25">](https://docs.rs/derive-aliases)
