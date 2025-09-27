@@ -21,16 +21,10 @@ Define aliases uses `define!`, and use them with `#[derive]`:
 
 ```rust
 mod derive_alias {
-    // Defines 3 aliases: `..Eq`, `..Ord` and `..Copy`
     derive_aliases::define! {
         Eq   = ::core::cmp::PartialEq, ::core::cmp::Eq;
         Ord  = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
         Copy = ::core::marker::Copy, ::core::clone::Clone;
-        //^^
-        // aliases
-        //
-        //     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        //      what each individual alias expands to
     }
 }
 
@@ -48,10 +42,15 @@ The above expands to this:
 struct User;
 ```
 
+- `#[derive(..Eq)]` expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq)]`
+- `#[derive(..Ord)]` expands to `#[derive(..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`, which expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`
+
 ## IDE Support
 
 One of my biggest goals with this crate was strong IDE Support and fast compile-times.
 Hovering over an alias `#[derive(..Alias)]` shows *exactly* what it expands into, and even Goto Definition directly brings you where the alias is defined.
+
+![IDE Support](https://raw.githubusercontent.com/nik-rev/derive-aliases/main/ide_support.png)
 
 ## Tip
 
@@ -71,7 +70,7 @@ so don't worry about any overhead of `#[derive_aliases::derive]` even when no al
 
 All derive aliases must exist at your `crate::derive_aliases`, so invoke the `derive_aliases::define!` macro there.
 
-You can define aliases in 1 crate, and use them from another. You can break `define!` apart into multiple definitions:
+You can break `define!` apart into multiple definitions:
 
 ```rust
 mod derive_alias {
@@ -96,6 +95,6 @@ mod derive_alias {
 struct User;
 ```
 
-The above Just Works. Most importantly, derive aliases need to available at `crate::derive_alias`.
+The above Just Works. Most importantly, derive aliases need to available at `crate::derive_alias`. This also allows you to share derive aliases across crates
 
 <!-- cargo-rdme end -->
