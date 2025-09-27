@@ -13,7 +13,7 @@
 //!
 //! # Usage
 //!
-//! Define aliases uses `define!`, and use them with `#[derive]`:
+//! Define aliases using `define!`, and use them with `#[derive]`:
 //!
 //! ```
 //! mod derive_alias {

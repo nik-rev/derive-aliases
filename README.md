@@ -17,7 +17,7 @@ derive_aliases = "0.3"
 
 ## Usage
 
-Define aliases uses `define!`, and use them with `#[derive]`:
+Define aliases using `define!`, and use them with `#[derive]`:
 
 ```rust
 mod derive_alias {
