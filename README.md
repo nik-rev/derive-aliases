@@ -22,8 +22,8 @@ Define aliases using `define!`, and use them with `#[derive]`:
 ```rust
 mod derive_alias {
     derive_aliases::define! {
-        Eq   = ::core::cmp::PartialEq, ::core::cmp::Eq;
-        Ord  = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
+        Eq = ::core::cmp::PartialEq, ::core::cmp::Eq;
+        Ord = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
         Copy = ::core::marker::Copy, ::core::clone::Clone;
     }
 }
@@ -47,26 +47,66 @@ struct User;
 
 ## IDE Support
 
-One of my biggest goals with this crate was strong IDE Support and fast compile-times.
 Hovering over an alias `#[derive(..Alias)]` shows *exactly* what it expands into, and even Goto Definition directly brings you where the alias is defined.
 
 ![IDE Support](https://raw.githubusercontent.com/nik-rev/derive-aliases/main/ide_support.png)
 
 ## Tip
 
-To globally override `#[std::derive]` with `#[derive_aliases::derive]`, add the following:
+To globally override `#[std::derive]` with <code>#[derive_aliases::<a href="crate::derive">derive</a>]</code>, add the following:
 
 ```rust
 #[macro_use]
 extern crate derive_aliases;
 ```
 
-The above lets you [`define!`] aliases and then use them anywhere in your crate!
+The above lets you [`define!`](macro@define) aliases and then use them anywhere in your crate!
 
 I have put a **ton** of effort into optimizing `derive_aliases` to be as zero-cost as possible in terms of compile-time over the standard library's `derive`,
 so don't worry about any overhead of `#[derive_aliases::derive]` even when no aliases are used! `derive_aliases` has 0 dependencies (not even `quote` or `syn`!)
 
-## Details
+## Derives are de-duplicated before being passed to `#[std::derive(..)]`
+
+Each derive alias expands into a bunch of derives, then de-duplicated. If there are 2 or more of the same derive, only 1 is kept.
+This is useful when there are some "pre-requisite" derives needed, but if they already exist then don't add them (instead of compile error'ing).
+
+```rust
+extern crate zerocopy;
+
+mod derive_alias {
+    derive_aliases::define! {
+        FastHash = ::zerocopy::ByteHash, ::zerocopy::Immutable, ::zerocopy::IntoBytes;
+        FastEq = ::zerocopy::ByteEq, ::zerocopy::Immutable, ::zerocopy::IntoBytes;
+    }
+}
+
+#[derive(..FastHash)]
+struct Example;
+
+// expands to:
+#[derive(::zerocopy::ByteHash, ::zerocopy::Immutable, ::zerocopy::IntoBytes)]
+struct Example;
+
+
+
+#[derive(..FastEq)]
+struct Example;
+
+// expands to:
+#[derive(::zerocopy::ByteEq, ::zerocopy::Immutable, ::zerocopy::IntoBytes)]
+struct Example;
+
+
+
+#[derive(..FastEq, ..FastHash)]
+struct Example;
+
+// expands to:
+#[derive(::zerocopy::ByteEq, ::zerocopy::ByteHash, ::zerocopy::Immutable, ::zerocopy::IntoBytes)]
+struct Example;
+```
+
+## Splitting up derive aliases
 
 All derive aliases must exist at your `crate::derive_aliases`, so invoke the `derive_aliases::define!` macro there.
 

@@ -17,3 +17,7 @@ derive_aliases_proc_macro = { path = "proc_macro", version = "0.1", features = [
 
 [workspace]
 members = [".", "proc_macro"]
+
+[dev-dependencies]
+# only used in doc example
+zerocopy = { version = "0.8", features = ["derive"] }

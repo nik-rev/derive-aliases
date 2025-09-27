@@ -15,3 +15,6 @@ proc-macro = true
 
 [features]
 show = []
+
+[dev-dependencies]
+derive_aliases = { path = ".." }
