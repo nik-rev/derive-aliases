@@ -17,7 +17,7 @@ derive_aliases = "0.3"
 
 ## Usage
 
-Define aliases using `define!`, and use them with `#[derive]`:
+Define aliases using [`define!`](define), and use them with [`#[derive]`](derive):
 
 ```rust
 mod derive_alias {
@@ -53,7 +53,7 @@ Hovering over an alias `#[derive(..Alias)]` shows *exactly* what it expands into
 
 ## Tip
 
-To globally override `#[std::derive]` with <code>#[derive_aliases::<a href="crate::derive">derive</a>]</code>, add the following:
+To globally override `#[std::derive]` with [`#[derive_aliases::derive]`](derive), add the following:
 
 ```rust
 #[macro_use]
@@ -65,7 +65,7 @@ The above lets you [`define!`](macro@define) aliases and then use them anywhere 
 I have put a **ton** of effort into optimizing `derive_aliases` to be as zero-cost as possible in terms of compile-time over the standard library's `derive`,
 so don't worry about any overhead of `#[derive_aliases::derive]` even when no aliases are used! `derive_aliases` has 0 dependencies (not even `quote` or `syn`!)
 
-## Derives are de-duplicated before being passed to `#[std::derive(..)]`
+## Derives are de-duplicated
 
 Each derive alias expands into a bunch of derives, then de-duplicated. If there are 2 or more of the same derive, only 1 is kept.
 This is useful when there are some "pre-requisite" derives needed, but if they already exist then don't add them (instead of compile error'ing).
@@ -104,6 +104,8 @@ struct Example;
 // expands to:
 #[derive(::zerocopy::ByteEq, ::zerocopy::ByteHash, ::zerocopy::Immutable, ::zerocopy::IntoBytes)]
 struct Example;
+
+// note that the 2 `Immutable` and 2 `IntoBytes` derives were de-duplicated
 ```
 
 ## Splitting up derive aliases
