@@ -16,16 +16,23 @@
 //! Define aliases uses `define!`, and use them with `#[derive]`:
 //!
 //! ```
-//! use derive_aliases::derive;
-//!
 //! mod derive_alias {
+//!     // Defines 3 aliases: `..Eq`, `..Ord` and `..Copy`
 //!     derive_aliases::define! {
-//!         Eq = ::core::cmp::PartialEq, ::core::cmp::Eq;
-//!         Ord = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
+//!         Eq   = ::core::cmp::PartialEq, ::core::cmp::Eq;
+//!         Ord  = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
 //!         Copy = ::core::marker::Copy, ::core::clone::Clone;
+//!         //^^
+//!         // aliases
+//!         //
+//!         //     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//!         //      what each individual alias expands to
 //!     }
 //! }
 //!
+//! use derive_aliases::derive;
+//!
+//! // Use the aliases:
 //! #[derive(Debug, ..Ord, ..Copy)]
 //! struct User;
 //! ```
@@ -40,7 +47,7 @@
 //! # IDE Support
 //!
 //! One of my biggest goals with this crate was strong IDE Support and fast compile-times.
-//! Hovering over an alias `#[..Alias]` shows *exactly* what it expands into, and even Goto Definition directly brings you where the alias is defined.
+//! Hovering over an alias `#[derive(..Alias)]` shows *exactly* what it expands into, and even Goto Definition directly brings you where the alias is defined.
 //!
 //! # Tip
 //!
