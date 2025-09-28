@@ -6,7 +6,7 @@
 [![docs.rs](https://img.shields.io/badge/docs.rs-derive_aliases-blue?style=flat-square&logo=docs.rs)](https://docs.rs/derive_aliases)
 ![license](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue?style=flat-square)
 ![msrv](https://img.shields.io/badge/msrv-1.56-blue?style=flat-square&logo=rust)
-[![github](https://img.shields.io/github/stars/nik-rev/derive_aliases)](https://github.com/nik-rev/derive-aliases)
+[![github](https://img.shields.io/github/stars/nik-rev/derive-aliases)](https://github.com/nik-rev/derive-aliases)
 
 This crate improves Rust's `derive` macro by supporting user-defined Derive aliases.
 
