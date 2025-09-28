@@ -44,67 +44,72 @@ See the [crate-level](https://docs.rs/derive_aliases/latest/derive_aliases) docu
 #[allow(unused_assignments)]
 #[proc_macro]
 pub fn define(tts: TokenStream) -> TokenStream {
-    // First we collect everything into a map which references itself
+    // First, let's create a Nested Alias Map:
     //
-    // Then, we'll "normalize" it by recursively expanding aliases
-    // until there is no more left
+    // Alias => Derive OR Alias
+    //
+    // It's nested because each alias expands to a bunch of aliases+derives,
+    // but we want to "normalize" it, so each alias expands to a bunch of derives.
+    // We'll do it later
     let mut nested_alias_map = HashMap::new();
 
-    // Token trees
-    let mut tts = tts.into_iter().peekable();
+    // Whole input to the macro
+    let mut ts = tts.into_iter().peekable();
 
     // Compile errors to report all at once
     let mut compile_errors = TokenStream::new();
 
-    // Span of the last token, or if there isn't one then it's where the macro
-    // was invoked at
+    // Span of the last token, for better error messages
     let mut last_span = Span::call_site();
 
-    /// Parses an identifier
-    macro_rules! expect_ident {
-        () => {
-            match tts.next() {
-                Some(TokenTree::Ident(punct)) => {
+    /// Parses a single `$punct` character
+    macro_rules! expect_punct {
+        ($punct:literal) => {
+            match ts.next() {
+                Some(TokenTree::Punct(punct)) if punct == $punct => {
                     last_span = punct.span();
-                    punct
+                    Some(punct)
                 }
                 Some(tt) => {
-                    return CompileError::new(tt.span(), "unexpected token; expected identifier")
-                        .into_iter()
-                        .collect();
+                    compile_errors.extend(CompileError::new(
+                        tt.span(),
+                        concat!("unexpected token; expected `", $punct, "`"),
+                    ));
+                    skip_current_alias_declaration!();
+                    None
                 }
                 None => {
-                    return CompileError::new(last_span, "expected identifier after this")
-                        .into_iter()
-                        .collect();
+                    compile_errors.extend(CompileError::new(
+                        last_span,
+                        concat!("expected `", $punct, "` after this"),
+                    ));
+                    skip_current_alias_declaration!();
+                    None
                 }
             }
         };
     }
 
-    /// Parses a single `$punct` character
-    macro_rules! expect_punct {
-        ($punct:literal) => {
-            match tts.next() {
-                Some(TokenTree::Punct(punct)) if punct == $punct => {
-                    last_span = punct.span();
-                    punct
-                }
-                Some(tt) => {
-                    return CompileError::new(
-                        tt.span(),
-                        concat!("unexpected token; expected `", $punct, "`"),
-                    )
-                    .into_iter()
-                    .collect();
-                }
-                None => {
-                    return CompileError::new(
-                        last_span,
-                        concat!("expected `", $punct, "` after this"),
-                    )
-                    .into_iter()
-                    .collect();
+    // // eat everything until the next alias declaration,
+    // // that way we can report multiple errors
+    // Some(TokenTree::Punct(punct)) if punct == ';' => break,
+    // // reached end of the input
+    // None => break,
+    // _ => ()
+
+    // We parse each alias declaration token-by-token. If the current alias
+    // declaration has a syntax error we'll just report it and skip parsing the current alias.
+    // This allows us to collect as many errors as possible before reporting them.
+    macro_rules! skip_current_alias_declaration {
+        () => {
+            loop {
+                match ts.next() {
+                    // eat everything until the next alias declaration,
+                    // that way we can report multiple errors
+                    Some(TokenTree::Punct(punct)) if punct == ';' => break,
+                    // reached end of the input
+                    None => break,
+                    _ => (),
                 }
             }
         };
@@ -121,18 +126,22 @@ pub fn define(tts: TokenStream) -> TokenStream {
     //
     // Another = Clone, ::std::hash::Hash;
     // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    while let Some(tt) = tts.next() {
+    'parse_alias_declaration: while let Some(tt) = ts.next() {
         // Alias = ..Foo, Bar, baz::Baz;
         // ^^^^^
         let TokenTree::Ident(alias_name) = tt else {
-            return CompileError::new(tt.span(), "expected identifier")
-                .into_iter()
-                .collect();
+            compile_errors.extend(CompileError::new(tt.span(), "expected identifier"));
+
+            skip_current_alias_declaration!();
+            continue;
         };
 
         // Alias = ..Foo, Bar, baz::Baz;
         //       ^
-        let eq = expect_punct!('=');
+        let Some(eq) = expect_punct!('=') else {
+            skip_current_alias_declaration!();
+            continue;
+        };
 
         let mut entities = Vec::new();
 
@@ -143,7 +152,7 @@ pub fn define(tts: TokenStream) -> TokenStream {
         //                ^^^
         //                     ^^^^^^^^
         loop {
-            match tts.next() {
+            match ts.next() {
                 // Parsing Alias expansion
                 //
                 // Alias = std::hash::Hash, ..Foo;
@@ -153,11 +162,32 @@ pub fn define(tts: TokenStream) -> TokenStream {
 
                     expect_punct!('.');
 
-                    let alias = expect_ident!();
+                    let alias = match ts.next() {
+                        Some(TokenTree::Ident(punct)) => {
+                            last_span = punct.span();
+                            punct
+                        }
+                        Some(tt) => {
+                            compile_errors.extend(CompileError::new(
+                                tt.span(),
+                                "unexpected token; expected identifier",
+                            ));
+                            skip_current_alias_declaration!();
+                            continue 'parse_alias_declaration;
+                        }
+                        None => {
+                            compile_errors.extend(CompileError::new(
+                                last_span,
+                                "expected identifier after this",
+                            ));
+                            skip_current_alias_declaration!();
+                            continue 'parse_alias_declaration;
+                        }
+                    };
 
                     entities.push(Entity::Alias(alias));
 
-                    match tts.next() {
+                    match ts.next() {
                         Some(TokenTree::Punct(punct)) if punct == ';' => {
                             last_span = punct.span();
                             break;
@@ -167,14 +197,18 @@ pub fn define(tts: TokenStream) -> TokenStream {
                             continue;
                         }
                         Some(tt) => {
-                            return CompileError::new(tt.span(), "expected `;` or `,`")
-                                .into_iter()
-                                .collect();
+                            compile_errors
+                                .extend(CompileError::new(tt.span(), "expected `;` or `,`"));
+                            skip_current_alias_declaration!();
+                            continue 'parse_alias_declaration;
                         }
                         None => {
-                            return CompileError::new(last_span, "expected `;` or `,` after this")
-                                .into_iter()
-                                .collect();
+                            compile_errors.extend(CompileError::new(
+                                last_span,
+                                "expected `;` or `,` after this",
+                            ));
+                            skip_current_alias_declaration!();
+                            continue 'parse_alias_declaration;
                         }
                     }
                 }
@@ -196,31 +230,29 @@ pub fn define(tts: TokenStream) -> TokenStream {
                             " of just `Copy`",
                         ),
                     ));
-                    continue;
+                    skip_current_alias_declaration!();
+                    continue 'parse_alias_declaration;
                 }
                 // Parsing absolute path to a derive
                 //
                 // Alias = ::std::hash::Hash, ..Foo;
                 //         ^^^^^^^^^^^^^^^^^
-                //
-                // TODO: Make it an inherent method on `Path`
                 Some(TokenTree::Punct(colon)) if colon == ':' => {
                     last_span = colon.span();
 
-                    // compile_errors.extend(CompileError::new(last_span, "lol"));
-
-                    let colon_colon = expect_punct!(':');
-
-                    // compile_errors.extend(CompileError::new(colon_colon.span(), "lol"));
-
-                    let mut path = match Path::parse(last_span, &mut tts) {
-                        Ok(path) => path,
-                        Err(err) => return err.into_iter().collect(),
+                    let Some(colon_colon) = expect_punct!(':') else {
+                        skip_current_alias_declaration!();
+                        continue 'parse_alias_declaration;
                     };
 
-                    // return CompileError::new(path.first_component.span(), &format!("{path}"))
-                    //     .into_iter()
-                    //     .collect();
+                    let mut path = match Path::parse(last_span, &mut ts) {
+                        Ok(path) => path,
+                        Err(err) => {
+                            compile_errors.extend(err);
+                            skip_current_alias_declaration!();
+                            continue 'parse_alias_declaration;
+                        }
+                    };
 
                     path.leading_colon = Some(PathSeparator {
                         first: colon.span(),
@@ -228,7 +260,7 @@ pub fn define(tts: TokenStream) -> TokenStream {
                     });
 
                     // Expect terminator.
-                    match tts.next() {
+                    match ts.next() {
                         Some(TokenTree::Punct(comma)) if comma == ',' => {
                             last_span = comma.span();
                             entities.push(Entity::Derive(path));
@@ -240,40 +272,39 @@ pub fn define(tts: TokenStream) -> TokenStream {
                             break;
                         }
                         Some(tt) => {
-                            return CompileError::new(
+                            compile_errors.extend(CompileError::new(
                                 tt.span(),
                                 "unexpected token; expected `:`, `;` or `,`",
-                            )
-                            .into_iter()
-                            .collect();
+                            ));
+                            skip_current_alias_declaration!();
+                            continue 'parse_alias_declaration;
                         }
                         None => {
-                            return CompileError::new(
+                            compile_errors.extend(CompileError::new(
                                 last_span,
                                 "expected `:`, `;` or `,` after this",
-                            )
-                            .into_iter()
-                            .collect();
+                            ));
+                            skip_current_alias_declaration!();
+                            continue 'parse_alias_declaration;
                         }
                     }
                 }
                 Some(tt) => {
                     last_span = tt.span();
-
-                    return CompileError::new(
+                    compile_errors.extend(CompileError::new(
                         tt.span(),
                         "unexpected token; expected `::`, `..` or an identifier",
-                    )
-                    .into_iter()
-                    .collect();
+                    ));
+                    skip_current_alias_declaration!();
+                    continue 'parse_alias_declaration;
                 }
                 None => {
-                    return CompileError::new(
+                    compile_errors.extend(CompileError::new(
                         eq.span(),
                         "expected `::`, `..` or an identifier after this",
-                    )
-                    .into_iter()
-                    .collect();
+                    ));
+                    skip_current_alias_declaration!();
+                    continue 'parse_alias_declaration;
                 }
             }
         }
@@ -285,14 +316,14 @@ pub fn define(tts: TokenStream) -> TokenStream {
         nested_alias_map: &HashMap<String, (Span, Vec<Entity>)>,
         entities: &[Entity],
         derives: &mut HashSet<Path>,
-        alias_ref_use_stmts: &mut TokenStream,
+        dummy_use_statements: &mut TokenStream,
         extern_aliases: &mut Vec<Ident>,
     ) {
         for entity in entities {
             match entity {
                 Entity::Alias(ident) => {
+                    // Maybe this alias has been created inside of this `define!` call (it is NOT an extern alias)
                     let Some((_span, entities)) = nested_alias_map.get(&ident.to_string()) else {
-                        // panic!("{ident:#?}");
                         // THIS macro invocation did not define this alias,
                         // but another one could have. Or it could have been imported from another
                         // module/crate
@@ -301,9 +332,11 @@ pub fn define(tts: TokenStream) -> TokenStream {
                         continue;
                     };
 
-                    // IMPORTANT: This must only exist if it is NOT an extern alias
-
-                    alias_ref_use_stmts.extend([
+                    // IMPORTANT: This must only exist if it is NOT an extern alias, so do NOT
+                    // move it before the `let...else` above
+                    //
+                    // use crate::derive_alias::Alias as _;
+                    dummy_use_statements.extend([
                         TokenTree::Ident(Ident::new("use", Span::call_site())),
                         TokenTree::Ident(Ident::new("crate", Span::call_site())),
                         TokenTree::Punct(Punct::new(':', Spacing::Joint)),
@@ -323,7 +356,7 @@ pub fn define(tts: TokenStream) -> TokenStream {
                         nested_alias_map,
                         entities,
                         derives,
-                        alias_ref_use_stmts,
+                        dummy_use_statements,
                         extern_aliases,
                     );
                 }
@@ -335,18 +368,28 @@ pub fn define(tts: TokenStream) -> TokenStream {
         }
     }
 
+    // This is a map `Alias => Derive`, so no more nested aliases
     let mut flat_alias_map = HashMap::new();
-    let mut alias_use_stmts = TokenStream::new();
-    let mut alias_ref_use_stmts = TokenStream::new();
 
+    // The `pub use __derive_alias_Foo as Foo;`s
+    let mut alias_use_stmts = TokenStream::new();
+
+    // All of these are just `use ... as _` the only reason we have them
+    // is to get access to the `Span` of whatever item they import, which we'll
+    // use in documentation to get nice docs-on-hover and goto-definition
+    let mut dummy_use_statements = TokenStream::new();
+
+    // Build up the `flat_alias_map`
     for (alias_name, (alias_name_span, entities)) in &nested_alias_map {
         // A flat list of derives that the alias expands to
         let mut flat_derives = HashSet::new();
 
         // "external" aliases that were NOT defined by this macro,
-        // we'll just call them appropriately
+        // we'll just nest the aliases then call the `__internal_derive_aliases_new_alias_with_externs` macro to de-duplicate
+        // to de-duplicate
         let mut extern_aliases = Vec::new();
 
+        // pub use __derive_alias_Foo as Foo;
         alias_use_stmts.extend([
             TokenTree::Ident(Ident::new("pub", Span::call_site())),
             TokenTree::Ident(Ident::new("use", Span::call_site())),
@@ -359,48 +402,38 @@ pub fn define(tts: TokenStream) -> TokenStream {
             TokenTree::Punct(Punct::new(';', Spacing::Joint)),
         ]);
 
+        // Resolve the alias and the recursive list of its derives
         resolve_alias(
             &nested_alias_map,
             entities,
             &mut flat_derives,
-            &mut alias_ref_use_stmts,
+            &mut dummy_use_statements,
             &mut extern_aliases,
         );
 
         for derive in &flat_derives {
-            alias_ref_use_stmts.extend(
+            // use ::std::hash::Hash as _;
+            //     ^^^^^^^^^^^^^^^^^ then we take this span and associate it with
+            //                       what the user wrote in `define!` call, to
+            //                       get documentation on hover
+            dummy_use_statements.extend(
                 [
+                    // use ::std::hash::Hash as _;
+                    // ^^^
                     TokenTree::Ident(Ident::new("use", Span::call_site())),
-                    TokenTree::Punct({
-                        let mut punct = Punct::new(':', Spacing::Joint);
-                        punct.set_span(derive.leading_colon.clone().unwrap().first);
-                        punct
-                    }),
-                    TokenTree::Punct({
-                        let mut punct = Punct::new(':', Spacing::Joint);
-                        punct.set_span(derive.leading_colon.clone().unwrap().second);
-                        punct
-                    }),
-                    TokenTree::Ident(derive.first_component.clone()),
                 ]
                 .into_iter()
-                .chain(derive.components.iter().flat_map(|(separator, ident)| {
-                    [
-                        TokenTree::Punct({
-                            let mut punct = Punct::new(':', Spacing::Joint);
-                            punct.set_span(separator.first);
-                            punct
-                        }),
-                        TokenTree::Punct({
-                            let mut punct = Punct::new(':', Spacing::Joint);
-                            punct.set_span(separator.second);
-                            punct
-                        }),
-                        TokenTree::Ident(ident.clone()),
-                    ]
-                }))
+                // use ::std::hash::Hash as _;
+                //     ^^^^^^^^^^^^^^^^^
+                .chain(derive.clone().into_tokens())
+                // use ::std::hash::Hash as _;
+                //                       ^^^^^
                 .chain([
+                    // use ::std::hash::Hash as _;
+                    //                       ^^
                     TokenTree::Ident(Ident::new("as", Span::call_site())),
+                    // use ::std::hash::Hash as _;
+                    //                          ^
                     TokenTree::Ident(Ident::new(
                         "_",
                         derive.components.last().map_or_else(
@@ -408,11 +441,27 @@ pub fn define(tts: TokenStream) -> TokenStream {
                             |(_, ident)| ident.span(),
                         ),
                     )),
+                    // use ::std::hash::Hash as _;
+                    //                           ^
                     TokenTree::Punct(Punct::new(';', Spacing::Joint)),
                 ]),
             );
         }
 
+        // A single alias. Done. We've resolved all of the actual aliases it points to
+        //
+        // derive_aliases::define! {
+        //     Eq = ::core::cmp::PartialEq, ::core::cmp::Eq;
+        // }
+        // derive_aliases::define! {
+        //     Copy = ::core::marker::Copy, ::core::clone::Clone;
+        //     Ord = ..Eq, ..Copy, ::core::cmp::PartialOrd, ::core::cmp::Ord;
+        // }
+        //
+        // For the `Ord` alias above:
+        //
+        // - flat_derives        =    ::core::marker::Copy, ::core::clone::Clone, ::core::cmp::PartialOrd, ::core::cmp::Ord
+        // - extern_aliases      =    Eq
         flat_alias_map.insert(alias_name, (alias_name_span, flat_derives, extern_aliases));
     }
 
@@ -420,81 +469,103 @@ pub fn define(tts: TokenStream) -> TokenStream {
     flat_alias_map
         .into_iter()
         .flat_map(|(alias, (_alias_span, derives, mut extern_aliases))| {
-            let input_tt = [
+            // The Input passed into the `new_alias!`
+            //
+            // __derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+            let input_into_new_alias_macro = [
+                // Real name of the generated `macro_rules! __derive_alias_Foo`
+                //
+                // __derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                // ^^^^^^^^^^^^^^^^^^
                 TokenTree::Ident(Ident::new(&format!("__derive_alias_{alias}"), *_alias_span)),
+                // Dollar token: The macro creates macros, so we can't use '$' in it. This becomes `$_:tt` so
+                // we use `$_` inside the macro
+                //
+                // __derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                //                    ^
                 TokenTree::Punct(Punct::new('$', proc_macro::Spacing::Alone)),
+                // Real name of the alias
+                //
+                // __derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                //                      ^^^
                 TokenTree::Ident(Ident::new(alias, Span::call_site())),
+                // __derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                //                         ^
                 TokenTree::Punct(Punct::new('!', proc_macro::Spacing::Joint)),
             ]
             .into_iter()
+            // The input is then following by a bunch of paths to all the derives the macro expands to,
+            // wrapped in `[...]`. so like `[::core::hash::Hash]`. That's because we want to compare 2 paths,
+            // but `:path` specifiers can't be compared, so we compare `[$($tt:tt)*]` instead
+            //
+            // __derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+            //                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
             .chain(derives.iter().flat_map(|derive| {
                 [
+                    // __derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                    //                           ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
                     TokenTree::Group(Group::new(
                         Delimiter::Bracket,
-                        TokenStream::from_iter(
-                            [
-                                // path separator `::`
-                                // since we know the path to derive is ALWAYS an absolute path
-                                //
-                                // ::std::hash::HashMap
-                                // ^^
-                                TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                                TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                                // first path segment
-                                //
-                                // ::std::hash::HashMap
-                                //   ^^^
-                                TokenTree::Ident(derive.first_component.clone()),
-                            ]
-                            .into_iter()
-                            .chain(derive.components.iter().flat_map(|(_colon, component)| {
-                                [
-                                    // path separator `::`
-                                    //
-                                    // ::std::hash::HashMap
-                                    //      ^^    ^^
-                                    TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                                    TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                                    // path segment
-                                    //
-                                    // ::std::hash::HashMap
-                                    //        ^^^^  ^^^^^^^
-                                    TokenTree::Ident(Ident::new(
-                                        &component.to_string(),
-                                        component.span(),
-                                    )),
-                                ]
-                            })),
-                        ),
+                        // __derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                        //                            ^^^^^^^^^^^^^^^^^^    ^^^^^^^^^^^^^^^^^^
+                        TokenStream::from_iter(derive.clone().into_tokens()),
                     )),
+                    // __derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                    //                                               ^                     ^
                     TokenTree::Punct(Punct::new(',', proc_macro::Spacing::Joint)),
                 ]
             }));
 
+            // NOTE: Treat the last extern alias specially, because we'll actually invoke it.
+            // The nested extern aliases will be invoked by this one, one-after-the-other
             if let Some(last_extern_alias) = extern_aliases.pop() {
+                // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                 TokenStream::from_iter([
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    // ^^^^^
                     TokenTree::Ident(Ident::new("crate", Span::call_site())),
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    //      ^^
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    //        ^^^^^^^^^^^^
                     TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    //                    ^^
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    //                      ^^^
                     TokenTree::Ident(last_extern_alias),
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    //                         ^
                     TokenTree::Punct(Punct::new('!', proc_macro::Spacing::Joint)),
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                    //                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                     TokenTree::Group(Group::new(
                         Delimiter::Brace,
                         TokenStream::from_iter([
+                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                            //                            ^
                             TokenTree::Punct(Punct::new('%', Spacing::Joint)),
+                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                            //                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                             TokenTree::Group(Group::new(
                                 Delimiter::Bracket,
                                 extern_aliases.into_iter().fold(
-                                    TokenStream::from_iter(input_tt),
+                                    TokenStream::from_iter(input_into_new_alias_macro),
                                     |acc, alias| {
                                         TokenStream::from_iter([
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            //                               ^^^^^
                                             TokenTree::Ident(Ident::new(
                                                 "crate",
                                                 Span::call_site(),
                                             )),
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            //                                    ^^
                                             TokenTree::Punct(Punct::new(
                                                 ':',
                                                 proc_macro::Spacing::Joint,
@@ -503,10 +574,14 @@ pub fn define(tts: TokenStream) -> TokenStream {
                                                 ':',
                                                 proc_macro::Spacing::Joint,
                                             )),
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            //                                      ^^^^^^^^^^^^
                                             TokenTree::Ident(Ident::new(
                                                 "derive_alias",
                                                 Span::call_site(),
                                             )),
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            //                                                  ^^
                                             TokenTree::Punct(Punct::new(
                                                 ':',
                                                 proc_macro::Spacing::Joint,
@@ -515,11 +590,17 @@ pub fn define(tts: TokenStream) -> TokenStream {
                                                 ':',
                                                 proc_macro::Spacing::Joint,
                                             )),
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            //                                                    ^^
                                             TokenTree::Ident(alias),
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            //                                                      ^
                                             TokenTree::Punct(Punct::new(
                                                 ',',
                                                 proc_macro::Spacing::Joint,
                                             )),
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[__derive_alias_Foo $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            //                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                                             TokenTree::Group(Group::new(Delimiter::Bracket, acc)),
                                         ])
                                     },
@@ -529,33 +610,59 @@ pub fn define(tts: TokenStream) -> TokenStream {
                     )),
                 ])
             } else {
+                // SIMPLE, and the most common case: There are no extern aliases referenced! That means
+                // we can create the alias fully from memory, including the documentation
+                //
+                // ::derive_aliases::__internal_derive_aliases_new_alias! { "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq], }
+                // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                 TokenStream::from_iter([
+                    // ::derive_aliases::__internal_derive_aliases_new_alias! { "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq], }
+                    // ^^
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
+                    // ::derive_aliases::__internal_derive_aliases_new_alias! { "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq], }
+                    //   ^^^^^^^^^^^^^^
                     TokenTree::Ident(Ident::new("derive_aliases", Span::call_site())),
+                    // ::derive_aliases::__internal_derive_aliases_new_alias! { "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq], }
+                    //                 ^^
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
+                    // ::derive_aliases::__internal_derive_aliases_new_alias! { "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq], }
+                    //                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                     TokenTree::Ident(Ident::new(
                         "__internal_derive_aliases_new_alias",
                         Span::call_site(),
                     )),
+                    // ::derive_aliases::__internal_derive_aliases_new_alias! { "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq], }
+                    //                                                      ^
                     TokenTree::Punct(Punct::new('!', proc_macro::Spacing::Joint)),
+                    // ::derive_aliases::__internal_derive_aliases_new_alias! { "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq], }
+                    //                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                     TokenTree::Group(Group::new(
                         Delimiter::Brace,
                         TokenStream::from_iter(
+                            // The generated documentation. Which we can fully create from what we already know
+                            //
+                            // ::derive_aliases::__internal_derive_aliases_new_alias! { "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq], }
+                            //                                                          ^^^^^
                             [TokenTree::Literal(Literal::string(
                                 &generate_documentation_for_alias(alias, &derives),
                             ))]
                             .into_iter()
-                            .chain(input_tt),
+                            // ::derive_aliases::__internal_derive_aliases_new_alias! { "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq], }
+                            //                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                            .chain(input_into_new_alias_macro),
                         ),
                     )),
                 ])
             }
         })
+        // Compile errors, which we report al at once
         .chain(compile_errors)
+        // All the `pub use __derive_alias_Foo as Foo;` statements
         .chain(alias_use_stmts)
         .chain(TokenStream::from_iter([
+            // #[allow(unused_imports)] - That's literally the point! (see below)
             TokenTree::Punct(Punct::new('#', Spacing::Joint)),
             TokenTree::Group(Group::new(
                 Delimiter::Bracket,
@@ -567,12 +674,23 @@ pub fn define(tts: TokenStream) -> TokenStream {
                     )),
                 ]),
             )),
+            // A bunch of dummy `use` statements. We only do this because we want to get the `Span` of whatever
+            // they import, so we can have documentation-on-hover
+            //
+            // const _: () = {
+            //     use foo::bar as _
+            //     use bar::baz as _
+            // };
+            //
+            // NOTE: We put it in an anonymous `const` declaration because then we need to emit just a single `#[allow(unused_imports)]`,
+            // instead of having to put it on every import. We don't have `mod _` which would be more semantically correct,
+            // so this is the next-best-thing
             TokenTree::Ident(Ident::new("const", Span::call_site())),
             TokenTree::Ident(Ident::new("_", Span::call_site())),
             TokenTree::Punct(Punct::new(':', Spacing::Joint)),
             TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
             TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-            TokenTree::Group(Group::new(Delimiter::Brace, alias_ref_use_stmts)),
+            TokenTree::Group(Group::new(Delimiter::Brace, dummy_use_statements)),
             TokenTree::Punct(Punct::new(';', Spacing::Joint)),
         ]))
         .collect()
@@ -829,14 +947,26 @@ impl Path {
             .map(PathSeparator::into_tokens)
             .into_iter()
             .flatten()
+            // first path segment
+            //
+            // ::core::hash::Hash
+            //   ^^^
             .chain([TokenTree::Ident(self.first_component)])
             .chain(
                 self.components
                     .into_iter()
                     .flat_map(|(separator, segment)| {
+                        // path separator `::`
+                        //
+                        // ::std::hash::HashMap
+                        //      ^^    ^^
                         separator
                             .into_tokens()
                             .into_iter()
+                            // path segment
+                            //
+                            // ::std::hash::HashMap
+                            //        ^^^^  ^^^^^^^
                             .chain(std::iter::once(TokenTree::Ident(segment)))
                     }),
             )

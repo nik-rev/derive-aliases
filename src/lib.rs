@@ -122,7 +122,7 @@
 //!
 //! # Splitting up derive aliases
 //!
-//! All derive aliases must exist at your `crate::derive_aliases`, so invoke the `derive_aliases::define!` macro there.
+//! All derive aliases must exist at your `crate::derive_alias`, so invoke the `derive_aliases::define!` macro there.
 //!
 //! You can break `define!` apart into multiple definitions:
 //!
