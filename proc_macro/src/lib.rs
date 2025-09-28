@@ -1187,11 +1187,26 @@ pub fn __internal_derive_aliases_new_alias_with_externs(ts: TokenStream) -> Toke
 }
 
 /// Separator in a path: `::`
+///
+/// ```ignore
+/// ::std::hash::Hash
+/// ^^   ^^    ^^
+/// ```
 #[core::prelude::v1::derive(Clone, Debug)]
 struct PathSeparator {
     /// Span of the first `:`
+    ///
+    /// ```ignore
+    /// ::std::hash::Hash
+    /// ^    ^     ^
+    /// ```
     first: Span,
     /// Span of the second `:`
+    ///
+    /// ```ignore
+    /// ::std::hash::Hash
+    ///  ^    ^     ^
+    /// ```
     second: Span,
 }
 
@@ -1231,12 +1246,22 @@ impl Eq for Path {}
 
 impl fmt::Display for Path {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // ::std::hash::Hash
+        // ^^
         if self.leading_colon.is_some() {
             f.write_str("::")?;
         }
+        // ::std::hash::Hash
+        //   ^^^
         f.write_str(&self.first_component.to_string())?;
         for (_sep, component) in &self.components {
+            // ::std::hash::Hash
+            //      ^^
+            //            ^^
             f.write_str("::")?;
+            // ::std::hash::Hash
+            //        ^^^^
+            //              ^^^^
             f.write_str(&component.to_string())?;
         }
 
