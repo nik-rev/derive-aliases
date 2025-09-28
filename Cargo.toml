@@ -12,7 +12,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-derive_aliases_proc_macro = { path = "proc_macro", version = "0.1", features = ["show"] }
+derive_aliases_proc_macro = { path = "proc_macro", version = "0.3", features = ["show"] }
 
 [workspace]
 members = [".", "proc_macro"]
