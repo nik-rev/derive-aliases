@@ -178,7 +178,6 @@
 //!
 //! In another crate, import the aliases:
 //!
-//!
 //! ```
 //! # macro_rules! x { () => {
 //! // crate which contains `Eq` and `Ord` aliases
