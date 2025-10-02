@@ -8,7 +8,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! derive_aliases = "0.3"
+//! derive_aliases = "0.4"
 //! ```
 //!
 //! # Usage
@@ -39,8 +39,14 @@
 //! struct User;
 //! ```
 //!
-//! - `#[derive(..Eq)]` expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq)]`
-//! - `#[derive(..Ord)]` expands to `#[derive(..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`, which expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`
+//! - `#[derive(..Eq)]`
+//!    - expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq)]`
+//! - `#[derive(..Ord)]`
+//!    - expands to `#[derive(..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`
+//!    - ...which expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`
+//!
+//! **How it works:** `derive_aliases::define!` expands to a bunch of `macro_rules!` items. Each macro item is the real alias, and
+//! these macros are composed together to generate the actual `#[std::derive]` on your item.
 //!
 //! # IDE Support
 //!
@@ -143,8 +149,8 @@
 //!         }
 //!     }
 //!
-//!     pub use foo::{Eq, Ord};
-//!     pub use bar::{Copy, StdTraits};
+//!     pub(crate) use foo::{Eq, Ord};
+//!     pub(crate) use bar::{Copy, StdTraits};
 //! }
 //!
 //! #[derive(..StdTraits)]
@@ -152,7 +158,47 @@
 //! # fn main() {}
 //! ```
 //!
-//! The above Just Works. Most importantly, derive aliases need to available at `crate::derive_alias`. This also allows you to share derive aliases across crates
+//! The above Just Works. Most importantly, derive aliases need to available at `crate::derive_alias`.
+//!
+//! # Sharing derives across multiple crates
+//!
+//! Use `#![export_derive_aliases]` on your definition to allow aliases to be used in other crates:
+//!
+//! ```
+//! pub mod derive_alias {
+//!     derive_aliases::define! {
+//!         #![export_derive_aliases]
+//!
+//!         Eq = ::core::cmp::PartialEq, ::core::cmp::Eq;
+//!         Copy = ::core::marker::Copy, ::core::clone::Clone;
+//!     }
+//! }
+//! # fn main() {}
+//! ```
+//!
+//! In another crate, import the aliases:
+//!
+//!
+//! ```
+//! # macro_rules! x { () => {
+//! // crate which contains `Eq` and `Ord` aliases
+//! extern crate foo;
+//!
+//! pub mod derive_alias {
+//!     // import aliases from that crate
+//!     use foo::derive_alias::*;
+//!
+//!     derive_aliases::define! {
+//!         Ord = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
+//!     }
+//! }
+//! # }; }
+//! # fn main() {}
+//! ```
+//!
+//! **Note:** `define!` expands to a bunch of `macro_rules!`, each of which is an alias. When you use `#![export_derive_aliases]`, these macros are tagged with `#[macro_export]` which
+//! makes every alias available at the crate root, but `#[doc(hidden)]` is automatically applied - users of your crate won't know about it. This is a necessity due to the limitations of
+//! Rust's declarative macros - it is **impossible** to export a macro from a crate without exporting it at the crate root
 #![allow(clippy::crate_in_macro_def)]
 
 #[cfg_attr(
@@ -252,17 +298,19 @@ pub use derive_aliases_proc_macro::derive;
 ///
 /// ```ignore
 /// ::derive_aliases::__internal_derive_aliases_new_alias! {
-///     "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq],
+///     "..." a $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq],
 /// }
-/// pub use __derive_alias_Eq as Eq;
+/// pub(crate) use Eq;
 /// ```
 ///
 /// - `"..."` contains the documentation, stuff passed to `#[doc = "..."]` so user gets a nice overview of what happens on hover,
 ///   but it is pretty long and so we omit it
 ///
-/// - `__derive_alias_Eq` is the real name of the generated `macro_rules!` alias. Because we must `#[macro_export]` it so it will
-///   be at the crate root (but we want to pretend it isn't), we have to do this. The `pub use __derive_alias_Eq as Eq` makes it available
-///   as `crate::derive_alias::Eq`, which is the actual path we reference when we later expand an alias like `#[derive_aliases::derive(..Eq)]`
+/// - `a` is the "visibility mode" of the alias. `a` and `b` are the two possible modes. in `a` (the default) the macro is not
+///   exported from the crate root, but in `b` it is. and this must be explicitly requested with the `#![export_derive_aliases]` attribute
+///
+///   In any case the derive `Alias` will be available at `crate::derive_alias::Alias`, but with `b` it is also available at the crate root (due to
+///   a limitation of the declarative macros)
 ///
 /// - Because `new_alias!` itself creates a `macro_rules!` we need the `$` token inside of the `macro_rules!` definition. But we can't use `$`
 ///   since that refers to the meta-variables captured by `new_alias!` and now the macro created *inside* `new_alias!`. So we do the 2nd
@@ -285,9 +333,9 @@ pub use derive_aliases_proc_macro::derive;
 ///
 ///   ```ignore
 ///   ::derive_aliases::__internal_derive_aliases_new_alias! {
-///       "..." __derive_alias_Ord $ Ord! [::core::cmp::PartialEq], [::core::cmp::Eq], [::core::cmp::Ord], [::core::cmp::PartialOrd],
+///       "..." a $ Ord! [::core::cmp::PartialEq], [::core::cmp::Eq], [::core::cmp::Ord], [::core::cmp::PartialOrd],
 ///   }
-///   pub use __derive_alias_Ord as Ord;
+///   pub(crate) use Ord;
 ///   ```
 ///
 ///   Because the `define!` macro itself referenes alias `..Eq` which it itself defines, we are able to "inline" all the aliases
@@ -308,16 +356,16 @@ pub use derive_aliases_proc_macro::derive;
 ///
 /// ```ignore
 /// ::derive_aliases::__internal_derive_aliases_new_alias! {
-///     "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq],
+///     "..." a $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq],
 /// }
-/// pub use __derive_alias_Eq as Eq;
+/// pub(crate) use Eq;
 /// ```
 ///
 /// The above expands into this:
 ///
 /// ```ignore
-/// macro_rules! __derive_alias_Eq { /* ... */ }
-/// pub use __derive_alias_Eq as Eq;
+/// macro_rules! Eq { /* ... */ }
+/// pub(crate) use Eq;
 /// ```
 ///
 /// The insides of this `macro_rules!` alias are not shown, as it's pretty big. And it won't make much sense to try and
@@ -377,14 +425,14 @@ pub use derive_aliases_proc_macro::derive;
 ///
 /// ```ignore
 /// ::derive_aliases::__internal_derive_aliases_new_alias! {
-///     "..." __derive_alias_Ord $ Ord! [::core::cmp::PartialEq], [::core::cmp::Eq], [::core::cmp::Ord], [::core::cmp::PartialOrd],
+///     "..." a $ Ord! [::core::cmp::PartialEq], [::core::cmp::Eq], [::core::cmp::Ord], [::core::cmp::PartialOrd],
 /// }
-/// pub use __derive_alias_Ord as Ord;
+/// pub(crate) use Ord;
 ///
 /// ::derive_aliases::__internal_derive_aliases_new_alias! {
-///     "..." __derive_alias_Eq $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq],
+///     "..." a $ Eq! [::core::cmp::PartialEq], [::core::cmp::Eq],
 /// }
-/// pub use __derive_alias_Eq as Eq;
+/// pub(crate) use Eq;
 /// ```
 ///
 /// Then expanding these aliases:
@@ -442,9 +490,27 @@ pub use derive_aliases_proc_macro::derive;
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __internal_derive_aliases_new_alias {
+    // visibility mode `b`
+    (a $name:ident $($alias:tt)*) => {
+        $($alias)*
+        pub(crate) use $name;
+    };
+    // visibility mode `a`
+    (b $name:ident $($alias:tt)*) => {
+        #[doc(hidden)]
+        #[macro_export]
+        $($alias)*
+
+        #[doc(inline)]
+        pub use $name;
+    };
     (
+        // documentation to show on hover for the alias
         $docs:literal
-        $real_name:ident
+
+        // visibility mode `a` or `b`
+        $vis_mode:ident
+
         // This is simply a `$` to create the inner Alias `macro_rules!`
         $_:tt
         // Name of the Alias we are creating
@@ -457,74 +523,108 @@ macro_rules! __internal_derive_aliases_new_alias {
             [$($derives:tt)*]
         ,)*
     ) => {
-        #[doc = $docs]
-        #[macro_export]
-        #[allow(clippy::crate_in_macro_def)]
-        #[doc(hidden)]
-        macro_rules! $real_name {
-            ///////////////////////////////////////////////////////////////
+        $crate::__internal_derive_aliases_new_alias! { $vis_mode $NAME
+            #[doc = $docs]
+            #[allow(clippy::crate_in_macro_def)]
+            macro_rules! $NAME {
+                ///////////////////////////////////////////////////////////////
 
-            // Ord! { #Eq, (Copy, (@ [Debug, ] [struct Foo;])), [] [] }
-            //
-            // PROCESSING COMPLETED. DELEGATE TO INNER ALIAS.
-            //
-            // We have removed all existing derives that COULD
-            // conflict with derives coming from the expansion of the
-            // CURRENT alias.
-            //
-            // Now let's forward to the inner alias to process further
-            (
-                // Inner alias and all arguments to it
-                # $_ Alias:path, ($_($_ pass:tt)*)
-                // EMPTY = we have processed all derives
-                []
-                // list of paths
-                [$_(
-                    // a single path
-                    [ $_ ($_ deduplicated:tt)* ],
-                )*]
-            ) => {
-                // Expand the inner alias
-                $_ Alias! {
-                    // Call insides of the macro
-                    $_($_ pass)*
-
-                    // Add derives at the end of the list which was de-duplicated
-                    [
-                        // Derives that were already existing, but filtered to EXCLUDE
-                        // any derives for THIS alias
-                        $_(
-                            // a single path to a derive
-                            [$_($_ deduplicated)*],
-                        )*
-
-                        // All the derives for THIS alias
-                        $(
-                            // a single path to a derive
-                            [$($derives)*],
-                        )*
-                    ]
-                }
-            };
-
-            //
-            // Remove each derive from the set
-            $(
-                // Remove a single CURRENT derive from the set
+                // Ord! { #Eq, (Copy, (@ [Debug, ] [struct Foo;])), [] [] }
+                //
+                // PROCESSING COMPLETED. DELEGATE TO INNER ALIAS.
+                //
+                // We have removed all existing derives that COULD
+                // conflict with derives coming from the expansion of the
+                // CURRENT alias.
+                //
+                // Now let's forward to the inner alias to process further
                 (
-                    // next alias and arguments
-                    # $_ Alias:path, $_ pass:tt
+                    // Inner alias and all arguments to it
+                    # $_ Alias:path, ($_($_ pass:tt)*)
+                    // EMPTY = we have processed all derives
+                    []
+                    // list of paths
+                    [$_(
+                        // a single path
+                        [ $_ ($_ deduplicated:tt)* ],
+                    )*]
+                ) => {
+                    // Expand the inner alias
+                    $_ Alias! {
+                        // Call insides of the macro
+                        $_($_ pass)*
 
+                        // Add derives at the end of the list which was de-duplicated
+                        [
+                            // Derives that were already existing, but filtered to EXCLUDE
+                            // any derives for THIS alias
+                            $_(
+                                // a single path to a derive
+                                [$_($_ deduplicated)*],
+                            )*
+
+                            // All the derives for THIS alias
+                            $(
+                                // a single path to a derive
+                                [$($derives)*],
+                            )*
+                        ]
+                    }
+                };
+
+                //
+                // Remove each derive from the set
+                $(
+                    // Remove a single CURRENT derive from the set
+                    (
+                        // next alias and arguments
+                        # $_ Alias:path, $_ pass:tt
+
+                        [
+                            // This STARTS WITH the derive currently being processed
+                            [ $($derives)* ],
+                            // rest of the paths
+                            $_ (
+                                // a single path
+                                [ $_ ($_ rest:tt)* ],
+                            )*
+                        ]
+
+                        // list of paths
+                        [
+                            $_ (
+                                // a single path
+                                [ $_ ($_ deduplicated:tt)* ],
+                            )*
+                        ]
+                    ) => {
+                        crate::derive_alias::$NAME! {
+                            // next alias and arguments
+                            # $_ Alias, $_ pass
+
+                            [$_ (
+                                [$_($_ rest)*],
+                            )*]
+
+                            [$_ (
+                                [ $_ ($_ deduplicated)* ],
+                            )*]
+                        }
+                    };
+                )*
+
+                // Everything else is just added as-is
+                (
+                    # $_ Alias:path, $_ pass:tt
                     [
-                        // This STARTS WITH the derive currently being processed
-                        [ $($derives)* ],
+                        // the first path
+                        [ $_($_ first:tt)* ],
                         // rest of the paths
-                        $_ (
+                        $_(
                             // a single path
                             [ $_ ($_ rest:tt)* ],
                         )*
                     ]
-
                     // list of paths
                     [
                         $_ (
@@ -534,285 +634,251 @@ macro_rules! __internal_derive_aliases_new_alias {
                     ]
                 ) => {
                     crate::derive_alias::$NAME! {
-                        // next alias and arguments
                         # $_ Alias, $_ pass
 
-                        [$_ (
-                            [$_($_ rest)*],
-                        )*]
+                        // process rest of the list
+                        [
+                            $_ (
+                                [$_($_ rest)*]
+                            ,)*
+                        ]
 
-                        [$_ (
-                            [ $_ ($_ deduplicated)* ],
-                        )*]
+                        [
+                            // existing de-duplicated paths
+                            $_(
+                                [$_($_ deduplicated)*],
+                            )*
+
+                            // add last path to the end, we know it can't be duplicated
+                            [ $_($_ first)* ],
+                        ]
                     }
                 };
-            )*
 
-            // Everything else is just added as-is
-            (
-                # $_ Alias:path, $_ pass:tt
-                [
-                    // the first path
-                    [ $_($_ first:tt)* ],
-                    // rest of the paths
-                    $_(
-                        // a single path
-                        [ $_ ($_ rest:tt)* ],
-                    )*
-                ]
-                // list of paths
-                [
-                    $_ (
-                        // a single path
-                        [ $_ ($_ deduplicated:tt)* ],
-                    )*
-                ]
-            ) => {
-                crate::derive_alias::$NAME! {
-                    # $_ Alias, $_ pass
+                ///////////////////////////////////////////////////////////////
+                // DONE
+                ///////////////////////////////////////////////////////////////
 
-                    // process rest of the list
-                    [
-                        $_ (
-                            [$_($_ rest)*]
-                        ,)*
-                    ]
-
-                    [
-                        // existing de-duplicated paths
-                        $_(
-                            [$_($_ deduplicated)*],
-                        )*
-
-                        // add last path to the end, we know it can't be duplicated
-                        [ $_($_ first)* ],
-                    ]
-                }
-            };
-
-            ///////////////////////////////////////////////////////////////
-            // DONE
-            ///////////////////////////////////////////////////////////////
-
-            // Now that we've removed the traits we want to add, Add them.
-            // This guarantees there is NO duplicate of them here
-            //
-            // Copy! { ? [Debug,][struct Foo;] [] [[Ord], [PartialOrd], [PartialEq],] }
-            (?
-                [
-                    $_($_ regular_derives:tt)*
-                ]
-
-                [
-                    $_($_ item:tt)*
-                ]
-
-                // FINISHED = processed all derives, none left
-                []
-
-                // list of paths
-                [$_ (
-                    // a single path
-                    [ $_ deduplicated:path ],
-                )*]
-            ) => {
-                #[::core::prelude::v1::derive(
-                    // All derives that did not come from an expansion
-                    $_(
-                        $_ regular_derives
-                    )*
-                    // Derives that were de-duplicated for THIS alias
-                    $_(
-                        $_ deduplicated,
-                    )*
-                    // Derives that come as a result of expansion of THIS alias
-                    $(
-                        $($derives)*,
-                    )*
-                )]
-
-                // the item we are applying the derives to
-                $_ ($_ item) *
-            };
-
-            // Remove each derive from the set
-            $(
+                // Now that we've removed the traits we want to add, Add them.
+                // This guarantees there is NO duplicate of them here
+                //
+                // Copy! { ? [Debug,][struct Foo;] [] [[Ord], [PartialOrd], [PartialEq],] }
                 (?
-                    $regular_derives:tt
-                    $item:tt
+                    [
+                        $_($_ regular_derives:tt)*
+                    ]
+
+                    [
+                        $_($_ item:tt)*
+                    ]
+
+                    // FINISHED = processed all derives, none left
+                    []
+
+                    // list of paths
+                    [$_ (
+                        // a single path
+                        [ $_ deduplicated:path ],
+                    )*]
+                ) => {
+                    #[::core::prelude::v1::derive(
+                        // All derives that did not come from an expansion
+                        $_(
+                            $_ regular_derives
+                        )*
+                        // Derives that were de-duplicated for THIS alias
+                        $_(
+                            $_ deduplicated,
+                        )*
+                        // Derives that come as a result of expansion of THIS alias
+                        $(
+                            $($derives)*,
+                        )*
+                    )]
+
+                    // the item we are applying the derives to
+                    $_ ($_ item) *
+                };
+
+                // Remove each derive from the set
+                $(
+                    (?
+                        $regular_derives:tt
+                        $item:tt
+                        [
+                            // the first path
+                            [ $($derives)* ],
+                            // rest of the paths
+                            $_ (
+                                // a single path
+                                [ $_ ($_ rest:tt)* ],
+                            )*
+                        ]
+                        // list of paths
+                        [$_(
+                            // a single path
+                            [ $_ ($_ deduplicated:tt)* ],
+                        )*]
+                    ) => {
+                        crate::derive_alias::$NAME! { ?
+                            $_ regular_derives
+                            $_ item
+
+                            //
+                            [$_ (
+                                [$_($_ rest)*],
+                            )*]
+
+                            // list of paths we knew were not duplicated
+                            [$_ (
+                                // a single path
+                                [$_($_ deduplicated)*],
+                            )*]
+                        }
+                    };
+                )*
+                // Everything else is just added as-is
+                (?
+                    $_ regular_derives:tt
+                    $_ item:tt
                     [
                         // the first path
-                        [ $($derives)* ],
+                        [ $_($_ first:tt)* ],
                         // rest of the paths
-                        $_ (
+                        $_(
                             // a single path
                             [ $_ ($_ rest:tt)* ],
                         )*
                     ]
                     // list of paths
-                    [$_(
-                        // a single path
-                        [ $_ ($_ deduplicated:tt)* ],
-                    )*]
+                    [
+                        $_ (
+                            // a single path
+                            [ $_ ($_ deduplicated:tt)* ],
+                        )*
+                    ]
                 ) => {
                     crate::derive_alias::$NAME! { ?
                         $_ regular_derives
                         $_ item
-
-                        //
-                        [$_ (
+                        // a list of paths to process
+                        [$_(
+                            // a single path
                             [$_($_ rest)*],
                         )*]
 
-                        // list of paths we knew were not duplicated
-                        [$_ (
-                            // a single path
-                            [$_($_ deduplicated)*],
-                        )*]
+                        // a list of paths we know is not duplicated
+                        [
+                            // a list of paths we already knew were not duplicated
+                            $_(
+                                // a single path
+                                [$_($_ deduplicated)*],
+                            )*
+
+                            // the path we learned that is not duplicated right now
+                            //
+                            // push the path we know cannot be duplicated to the end
+                            [$_($_ first)*],
+                        ]
                     }
                 };
-            )*
-            // Everything else is just added as-is
-            (?
-                $_ regular_derives:tt
-                $_ item:tt
-                [
-                    // the first path
-                    [ $_($_ first:tt)* ],
-                    // rest of the paths
-                    $_(
-                        // a single path
-                        [ $_ ($_ rest:tt)* ],
-                    )*
-                ]
-                // list of paths
-                [
-                    $_ (
-                        // a single path
-                        [ $_ ($_ deduplicated:tt)* ],
-                    )*
-                ]
-            ) => {
-                crate::derive_alias::$NAME! { ?
-                    $_ regular_derives
-                    $_ item
-                    // a list of paths to process
-                    [$_(
-                        // a single path
-                        [$_($_ rest)*],
-                    )*]
 
-                    // a list of paths we know is not duplicated
-                    [
-                        // a list of paths we already knew were not duplicated
-                        $_(
-                            // a single path
-                            [$_($_ deduplicated)*],
-                        )*
-
-                        // the path we learned that is not duplicated right now
-                        //
-                        // push the path we know cannot be duplicated to the end
-                        [$_($_ first)*],
-                    ]
-                }
-            };
-
-            // Reached the base case. No more nested aliases
-            (@
-                // list of derives that did not come from alias expansion
-                $_ regular_derives:tt
-                // the item that we will generate a `#[derive]` for
-                $_ item:tt
-                // list of paths
-                [$_ (
-                    // a single path
-                    [ $_ ($_ derives:tt)* ],
-                )*]
-            ) => {
-                // Add the existing derives but de-duplicate
-                crate::derive_alias::$NAME! { ?
-                    $_ regular_derives
-                    $_ item
-
-                    [$_(
-                        [$_($_ derives)*]
-                    ,)*]
-
-                    // this will be populated with Derives that are NOT derives that
-                    // could possibly come from this alias expansion,
-                    // because we don't want to accidentally get duplicates
-                    []
-                }
-            };
-
-            ///////////////////////////////////////////////////////////////
-
-            (
-                $_ Alias:path,$_ tt:tt
-                // list of paths
-                [$_ (
-                    // a single path
-                    [ $_ ($_ derives:tt)* ],
-                )*]
-            ) => {
-                // De-duplicate
-                crate::derive_alias::$NAME! {
-                    # $_ Alias,$_ tt
-                    // All current derives
+                // Reached the base case. No more nested aliases
+                (@
+                    // list of derives that did not come from alias expansion
+                    $_ regular_derives:tt
+                    // the item that we will generate a `#[derive]` for
+                    $_ item:tt
+                    // list of paths
                     [$_ (
-                        // a single derive
-                        [$_($_ derives)*]
-                    ,)*]
-                    // De-duplicated derives will go in here
-                    []
-                }
-            };
+                        // a single path
+                        [ $_ ($_ derives:tt)* ],
+                    )*]
+                ) => {
+                    // Add the existing derives but de-duplicate
+                    crate::derive_alias::$NAME! { ?
+                        $_ regular_derives
+                        $_ item
 
-            ///////////////////////////////////////////////////////////////
+                        [$_(
+                            [$_($_ derives)*]
+                        ,)*]
 
-            (%
-                [
-                    // The next alias to stack
-                    $_ next_alias:path,
+                        // this will be populated with Derives that are NOT derives that
+                        // could possibly come from this alias expansion,
+                        // because we don't want to accidentally get duplicates
+                        []
+                    }
+                };
 
-                    // arguments to create the alias
-                    $_ args:tt
-                ]
+                ///////////////////////////////////////////////////////////////
 
-                // Our accumulator. We'll push aliases here
-                $_ ( [ $_($_ accumulated:tt)* ], ) *
-            ) => {
-                $_ next_alias! { %
-                    // arguments to create the next alias
-                    $_ args
+                (
+                    $_ Alias:path,$_ tt:tt
+                    // list of paths
+                    [$_ (
+                        // a single path
+                        [ $_ ($_ derives:tt)* ],
+                    )*]
+                ) => {
+                    // De-duplicate
+                    crate::derive_alias::$NAME! {
+                        # $_ Alias,$_ tt
+                        // All current derives
+                        [$_ (
+                            // a single derive
+                            [$_($_ derives)*]
+                        ,)*]
+                        // De-duplicated derives will go in here
+                        []
+                    }
+                };
 
-                    // the aliases we collected
-                    $_ ( [ $_($_ accumulated)* ], ) *
+                ///////////////////////////////////////////////////////////////
 
-                    // add our own aliases to top of the stack
-                    $( [$($derives)*], )*
-                }
-            };
+                (%
+                    [
+                        // The next alias to stack
+                        $_ next_alias:path,
 
-            // BASE CASE: Reached end of the alias accumulation, create
-            (%
-                [ $_ ($_ tt:tt)* ]
+                        // arguments to create the alias
+                        $_ args:tt
+                    ]
 
-                $_ ( [ $_($_ accumulated:tt)* ], ) *
-            ) => {
-                // create the alias
-                $crate::__internal_derive_aliases_new_alias_with_externs! {
-                    // all existing arguments
-                    $_ ( $_ tt )*
+                    // Our accumulator. We'll push aliases here
+                    $_ ( [ $_($_ accumulated:tt)* ], ) *
+                ) => {
+                    $_ next_alias! { %
+                        // arguments to create the next alias
+                        $_ args
 
-                    // the aliases we collected
-                    $_ ( [ $_($_ accumulated)* ], ) *
+                        // the aliases we collected
+                        $_ ( [ $_($_ accumulated)* ], ) *
 
-                    // add our own aliases to top of the stack
-                    $( [$($derives)*], )*
-                }
-            };
+                        // add our own aliases to top of the stack
+                        $( [$($derives)*], )*
+                    }
+                };
+
+                // BASE CASE: Reached end of the alias accumulation, create
+                (%
+                    [ $_ ($_ tt:tt)* ]
+
+                    $_ ( [ $_($_ accumulated:tt)* ], ) *
+                ) => {
+                    // create the alias
+                    $crate::__internal_derive_aliases_new_alias_with_externs! {
+                        // all existing arguments
+                        $_ ( $_ tt )*
+
+                        // the aliases we collected
+                        $_ ( [ $_($_ accumulated)* ], ) *
+
+                        // add our own aliases to top of the stack
+                        $( [$($derives)*], )*
+                    }
+                };
+            }
         }
     }
 }

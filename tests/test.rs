@@ -13,9 +13,11 @@ macro_rules! assert_impls {
     };
 }
 
-mod derive_alias {
+pub mod derive_alias {
     mod foo {
         derive_aliases::define! {
+            #![export_derive_aliases]
+
             Eq = ::core::cmp::Eq, ::core::cmp::PartialEq;
             AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
         }
@@ -29,7 +31,7 @@ mod derive_alias {
         }
     }
 
-    pub use bar::{Everything, Ord};
+    pub(crate) use bar::{Everything, Ord};
     pub use foo::*;
 }
 
@@ -47,9 +49,6 @@ assert_impls!(i [..Eq, Clone, Copy] => Eq, PartialEq, Clone, Copy);
 assert_impls!(j [Clone, Copy, ..Eq] => Eq, PartialEq, Clone, Copy);
 
 assert_impls!(m [..Eq, ..Eq] => Eq, PartialEq);
-
-#[allow(unused_imports)]
-use derive_alias::Everything;
 
 #[cfg(test)]
 #[test]

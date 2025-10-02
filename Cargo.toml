@@ -12,13 +12,13 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-derive_aliases_proc_macro = { path = "proc_macro", version = "0.3", features = ["show"] }
+derive_aliases_proc_macro = { path = "proc_macro", version = "0.4", features = ["show"] }
 
 [workspace]
 members = [".", "proc_macro"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.60"
 authors = ["Nik Revenco <pm@nikrev.com>"]
