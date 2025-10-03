@@ -164,6 +164,7 @@ pub fn define(tts: TokenStream) -> TokenStream {
         // Alias = ..Foo, Bar, baz::Baz;
         //       ^
         if ts.char('=').is_none() {
+            compile_errors.push(ts.compile_error("expected `=`"));
             skip_current_alias_declaration!();
             continue 'parse_alias_declaration;
         };
@@ -220,9 +221,7 @@ pub fn define(tts: TokenStream) -> TokenStream {
                             continue 'parse_entity;
                         }
                         _ => {
-                            compile_errors.push(ts.compile_error(
-                                "expected `;`, or `,` followed by a path like `::std::hash::Hash` or `..Alias`",
-                            ));
+                            compile_errors.push(ts.compile_error("expected `;`, or `,`"));
                             skip_current_alias_declaration!();
                             continue 'parse_alias_declaration;
                         }
@@ -254,6 +253,11 @@ pub fn define(tts: TokenStream) -> TokenStream {
                     // ::std::hash::Hash
                     //  ^
                     let Some(colon_colon) = ts.char(':') else {
+                        compile_errors.push(
+                            ts.compile_error(
+                                "expected `:` to form a path like `::std::hash::Hash`",
+                            ),
+                        );
                         skip_current_alias_declaration!();
                         continue 'parse_alias_declaration;
                     };
