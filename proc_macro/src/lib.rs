@@ -134,11 +134,11 @@ pub fn define(tts: TokenStream) -> TokenStream {
     // Visibility mode defines who can see the macro. It is a hack that is
     // necessary because there's no way to export macro from the crate without using `#[macro_export]` on it
     let visibility_mode = if export_derive_aliases.is_some() {
-        // visibility `a`: can be accessed inside of crate, but not outside
-        Ident::new("a", Span::call_site())
-    } else {
         // visibility `b`: can be accessed outside of the crate
         Ident::new("b", Span::call_site())
+    } else {
+        // visibility `a`: can be accessed inside of crate, but not outside
+        Ident::new("a", Span::call_site())
     };
 
     // Loop that parses every alias declaration
