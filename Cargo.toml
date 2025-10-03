@@ -29,3 +29,4 @@ keywords = ["macros", "derive", "alias"]
 [dev-dependencies]
 # only used in doc example
 zerocopy = { version = "0.8", features = ["derive"] }
+trybuild = "1.0"

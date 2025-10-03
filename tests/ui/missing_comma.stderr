@@ -1,0 +1,5 @@
+error: expected `;` or `,`
+ --> tests/ui/missing_comma.rs:4:38
+  |
+4 |         AndMore = ::std::hash::Hash  ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
+  |                                      ^

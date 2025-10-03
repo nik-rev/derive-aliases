@@ -1,0 +1,23 @@
+error: expected identifier to form a path like `::std::hash::Hash`
+ --> tests/ui/missing_last_segment.rs:3:44
+  |
+3 |         Eq = ::core::cmp::Eq, ::core::cmp::;
+  |                                            ^
+
+error[E0432]: unresolved import `crate`
+ --> tests/ui/missing_last_segment.rs:2:5
+  |
+2 | /     derive_aliases::define! {
+3 | |         Eq = ::core::cmp::Eq, ::core::cmp::;
+4 | |         //                                  ^ missing last segment
+5 | |         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
+6 | |     }
+  | |_____^ no `AndMore` in `derive_alias`
+  |
+  = note: this error originates in the macro `derive_aliases::define` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0433]: failed to resolve: could not find `Ord` in `derive_alias`
+ --> tests/ui/missing_last_segment.rs:5:40
+  |
+5 |         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
+  |                                        ^^^ could not find `Ord` in `derive_alias`

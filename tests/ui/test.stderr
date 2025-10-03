@@ -1,0 +1,5 @@
+error[E0601]: `main` function not found in crate `$CRATE`
+  --> tests/test.rs:60:2
+   |
+60 | }
+   |  ^ consider adding a `main` function to `$DIR/tests/test.rs`

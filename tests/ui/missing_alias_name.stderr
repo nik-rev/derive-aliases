@@ -1,0 +1,5 @@
+error: expected alias name (identifier)
+ --> tests/ui/missing_alias_name.rs:3:9
+  |
+3 |         = ::core::cmp::Eq, ::core::cmp::PartialEq
+  |         ^

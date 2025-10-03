@@ -156,7 +156,10 @@ pub fn define(tts: TokenStream) -> TokenStream {
         // Alias = ..Foo, Bar, baz::Baz;
         // ^^^^^
         let TokenTree::Ident(alias_name) = tt else {
-            compile_errors.push(CompileError::new(tt.span(), "expected identifier"));
+            compile_errors.push(CompileError::new(
+                tt.span(),
+                "expected alias name (identifier)",
+            ));
             skip_current_alias_declaration!();
             continue 'parse_alias_declaration;
         };

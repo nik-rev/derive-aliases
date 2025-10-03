@@ -1,0 +1,5 @@
+error: expected `:` to form a path like `::std::hash::Hash`
+ --> tests/ui/missing_colon.rs:3:15
+  |
+3 |         Eq = :core::cmp::Eq, ::core:cmp::PartialEq
+  |               ^^^^

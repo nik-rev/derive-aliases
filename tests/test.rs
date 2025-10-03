@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 macro_rules! assert_impls {
     ($name:ident [$($input:tt)*] => $($($segment:ident)::*),*) => {
         mod $name {
@@ -51,6 +53,8 @@ assert_impls!(j [Clone, Copy, ..Eq] => Eq, PartialEq, Clone, Copy);
 
 assert_impls!(m [..Eq, ..Eq] => Eq, PartialEq);
 
-#[cfg(test)]
 #[test]
-fn it_compiles() {}
+fn ui() {
+    let harness = trybuild::TestCases::new();
+    harness.compile_fail("tests/ui/*.rs");
+}
