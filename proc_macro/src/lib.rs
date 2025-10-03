@@ -480,7 +480,7 @@ pub fn define(tts: TokenStream) -> TokenStream {
     // Finally let's expand all of this to a bunch of invocations of the `__internal_derive_aliases_new_alias!` macro
     flat_alias_map
         .into_iter()
-        .flat_map(|(alias, (_alias_span, derives, mut extern_aliases))| {
+        .flat_map(|(alias, (alias_span, derives, mut extern_aliases))| {
             // The Input passed into the `new_alias!`
             //
             // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
@@ -500,7 +500,11 @@ pub fn define(tts: TokenStream) -> TokenStream {
                 //
                 // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
                 //     ^^^
-                TokenTree::Ident(Ident::new(alias, Span::call_site())),
+                //
+                // IMPORTANT: `alias_span` here allows us to associate definition of the actual alias
+                // with usages of it. This means when we do "goto definition" it takes us to the ACTUAL alias definition
+                // Very, very important to not remove this for good DX
+                TokenTree::Ident(Ident::new(alias, *alias_span)),
                 // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
                 //        ^
                 TokenTree::Punct(Punct::new('!', proc_macro::Spacing::Joint)),
