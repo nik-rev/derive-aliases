@@ -153,6 +153,7 @@ The above Just Works. Most importantly, derive aliases need to available at `cra
 Use `#![export_derive_aliases]` inside of a call to [`derive_aliases::define!`](https://docs.rs/derive_aliases/latest/derive_aliases/macro.define.html) to allow aliases to be used in other crates:
 
 ```rust
+// crate `foo`:
 pub mod derive_alias {
     derive_aliases::define! {
         #![export_derive_aliases]
@@ -177,6 +178,10 @@ pub mod derive_alias {
         Ord = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
     }
 }
+use derive_aliases::derive;
+
+#[derive(..Ord, ..Copy, Debug)]
+struct User;
 ```
 
 For details, hover over `#![export_derive_aliases]` in your editor

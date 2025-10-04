@@ -168,6 +168,7 @@
 //! Use `#![export_derive_aliases]` inside of a call to [`derive_aliases::define!`](define) to allow aliases to be used in other crates:
 //!
 //! ```
+//! // crate `foo`:
 //! pub mod derive_alias {
 //!     derive_aliases::define! {
 //!         #![export_derive_aliases]
@@ -194,6 +195,10 @@
 //!         Ord = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
 //!     }
 //! }
+//! use derive_aliases::derive;
+//!
+//! #[derive(..Ord, ..Copy, Debug)]
+//! struct User;
 //! # }; }
 //! # fn main() {}
 //! ```
