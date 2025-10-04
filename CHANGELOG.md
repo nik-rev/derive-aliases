@@ -1,3 +1,16 @@
+# v0.4.0
+
+By default, the derive aliases are private within your crate. To allow other crates to use
+derive aliases defined in your crate, add the `#![export_derive_aliases]` attribute:
+
+```rust
+derive_aliases::define! {
+    #![export_derive_aliases]
+
+    Eq = ::core::cmp::PartialEq, ::core::cmp::Eq;
+}
+```
+
 # v0.3.0
 
 The way you define aliases has completely changed. Instead of a separate file that exists next to `Cargo.toml`, they
