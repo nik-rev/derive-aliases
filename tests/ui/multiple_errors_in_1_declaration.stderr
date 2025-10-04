@@ -1,23 +1,29 @@
-error: expected identifier to form a path like `::std::hash::Hash`
- --> tests/ui/missing_last_segment.rs:3:44
+error: expected `::` to form a path like `::std::hash::Hash`
+ --> tests/ui/multiple_errors_in_1_declaration.rs:3:21
   |
-3 |         Eq = ::core::cmp::Eq, ::core::cmp::;
-  |                                            ^
+3 |         Eq = ::core:cmp::Eq, ::core::cmp:PartialEq;
+  |                     ^^^
+
+error: expected `::` to form a path like `::std::hash::Hash`
+ --> tests/ui/multiple_errors_in_1_declaration.rs:3:42
+  |
+3 |         Eq = ::core:cmp::Eq, ::core::cmp:PartialEq;
+  |                                          ^^^^^^^^^
 
 error: to avoid surprises, path to derive in alias definition must be absolute - meaning it must start with `::`
 
        for example, use `::std::hash::Hash` instead of `std::hash::Hash` and use `::core::marker::Copy` instead of just `Copy`
- --> tests/ui/missing_last_segment.rs:5:9
+ --> tests/ui/multiple_errors_in_1_declaration.rs:5:9
   |
 5 |         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
   |         ^^^^^^^
 
 error[E0432]: unresolved import `crate`
- --> tests/ui/missing_last_segment.rs:2:5
+ --> tests/ui/multiple_errors_in_1_declaration.rs:2:5
   |
 2 | /     derive_aliases::define! {
-3 | |         Eq = ::core::cmp::Eq, ::core::cmp::;
-4 | |         //                                  ^ missing last segment
+3 | |         Eq = ::core:cmp::Eq, ::core::cmp:PartialEq;
+4 | |         //         ^ syntax error #1    ^ syntax error #2
 5 | |         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
 6 | |     }
   | |_____^ no `Eq` in `derive_alias`
@@ -26,15 +32,15 @@ error[E0432]: unresolved import `crate`
 help: consider importing this trait instead
   |
 2 -     derive_aliases::define! {
-3 -         Eq = ::core::cmp::Eq, ::core::cmp::;
-4 -         //                                  ^ missing last segment
+3 -         Eq = ::core:cmp::Eq, ::core::cmp:PartialEq;
+4 -         //         ^ syntax error #1    ^ syntax error #2
 5 -         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
 6 -     }
 2 +     std::cmp::Eq as _
   |
 
 error[E0433]: failed to resolve: could not find `Ord` in `derive_alias`
- --> tests/ui/missing_last_segment.rs:5:40
+ --> tests/ui/multiple_errors_in_1_declaration.rs:5:40
   |
 5 |         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
   |                                        ^^^ could not find `Ord` in `derive_alias`

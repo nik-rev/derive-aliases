@@ -1,0 +1,38 @@
+error: expected `::` to form a path like `::std::hash::Hash`
+ --> tests/ui/multiple_syntax_errors_across_declarations.rs:3:21
+  |
+3 |         Eq = ::core:cmp::Eq, ::core::cmp::PartialEq;
+  |                     ^^^
+
+error: expected `:` to form a path like `::std::hash::Hash`
+ --> tests/ui/multiple_syntax_errors_across_declarations.rs:5:20
+  |
+5 |         AndMore = :std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
+  |                    ^^^
+
+error[E0432]: unresolved import `crate`
+ --> tests/ui/multiple_syntax_errors_across_declarations.rs:2:5
+  |
+2 | /     derive_aliases::define! {
+3 | |         Eq = ::core:cmp::Eq, ::core::cmp::PartialEq;
+4 | |         //         ^ syntax error #1
+5 | |         AndMore = :std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
+6 | |         //        ^ syntax error #2
+7 | |     }
+  | |_____^ no `AndMore` in `derive_alias`
+  |
+  = note: this error originates in the macro `derive_aliases::define` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0433]: failed to resolve: could not find `Ord` in `derive_alias`
+ --> tests/ui/multiple_syntax_errors_across_declarations.rs:5:39
+  |
+5 |         AndMore = :std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
+  |                                       ^^^ could not find `Ord` in `derive_alias`
+
+warning: unused macro definition: `Eq`
+ --> tests/ui/multiple_syntax_errors_across_declarations.rs:3:9
+  |
+3 |         Eq = ::core:cmp::Eq, ::core::cmp::PartialEq;
+  |         ^^
+  |
+  = note: `#[warn(unused_macros)]` on by default

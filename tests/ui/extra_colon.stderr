@@ -4,6 +4,14 @@ error: expected identifier to form a path like `::std::hash::Hash`
 3 |         Eq = ::core::cmp::Eq, ::core:::cmp::PartialEq;
   |                                       ^
 
+error: to avoid surprises, path to derive in alias definition must be absolute - meaning it must start with `::`
+
+       for example, use `::std::hash::Hash` instead of `std::hash::Hash` and use `::core::marker::Copy` instead of just `Copy`
+ --> tests/ui/extra_colon.rs:5:9
+  |
+5 |         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
+  |         ^^^^^^^
+
 error[E0432]: unresolved import `crate`
  --> tests/ui/extra_colon.rs:2:5
   |
@@ -12,9 +20,18 @@ error[E0432]: unresolved import `crate`
 4 | |         //                           ^ extra `:`
 5 | |         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
 6 | |     }
-  | |_____^ no `AndMore` in `derive_alias`
+  | |_____^ no `Eq` in `derive_alias`
   |
   = note: this error originates in the macro `derive_aliases::define` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider importing this trait instead
+  |
+2 -     derive_aliases::define! {
+3 -         Eq = ::core::cmp::Eq, ::core:::cmp::PartialEq;
+4 -         //                           ^ extra `:`
+5 -         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
+6 -     }
+2 +     std::cmp::Eq as _
+  |
 
 error[E0433]: failed to resolve: could not find `Ord` in `derive_alias`
  --> tests/ui/extra_colon.rs:5:40

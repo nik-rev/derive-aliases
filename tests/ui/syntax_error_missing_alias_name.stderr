@@ -1,15 +1,15 @@
-error: expected `=`
- --> tests/ui/missing_eq.rs:3:13
+error: expected alias name (identifier)
+ --> tests/ui/syntax_error_missing_alias_name.rs:3:9
   |
-3 |         Eq  ::core::cmp::Eq, ::core::cmp::PartialEq;
-  |             ^
+3 |         = ::core::cmp::Eq, ::core::cmp::PartialEq;
+  |         ^
 
 error[E0432]: unresolved import `crate`
- --> tests/ui/missing_eq.rs:2:5
+ --> tests/ui/syntax_error_missing_alias_name.rs:2:5
   |
 2 | /     derive_aliases::define! {
-3 | |         Eq  ::core::cmp::Eq, ::core::cmp::PartialEq;
-4 | |         // ^ missing `=`
+3 | |         = ::core::cmp::Eq, ::core::cmp::PartialEq;
+4 | |     // ^ missing name
 5 | |         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
 6 | |     }
   | |_____^ no `AndMore` in `derive_alias`
@@ -17,15 +17,7 @@ error[E0432]: unresolved import `crate`
   = note: this error originates in the macro `derive_aliases::define` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0433]: failed to resolve: could not find `Ord` in `derive_alias`
- --> tests/ui/missing_eq.rs:5:40
+ --> tests/ui/syntax_error_missing_alias_name.rs:5:40
   |
 5 |         AndMore = ::std::hash::Hash, ..Ord, ::core::clone::Clone, ::core::marker::Copy, ::core::default::Default;
   |                                        ^^^ could not find `Ord` in `derive_alias`
-
-warning: unused macro definition: `Eq`
- --> tests/ui/missing_eq.rs:3:9
-  |
-3 |         Eq  ::core::cmp::Eq, ::core::cmp::PartialEq;
-  |         ^^
-  |
-  = note: `#[warn(unused_macros)]` on by default

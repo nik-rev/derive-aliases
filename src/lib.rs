@@ -162,7 +162,7 @@
 //!
 //! # Sharing derives across multiple crates
 //!
-//! Use `#![export_derive_aliases]` on your definition to allow aliases to be used in other crates:
+//! Use `#![export_derive_aliases]` inside of a call to [`derive_aliases::define!`](define) to allow aliases to be used in other crates:
 //!
 //! ```
 //! pub mod derive_alias {
@@ -195,9 +195,7 @@
 //! # fn main() {}
 //! ```
 //!
-//! **Note:** [`define!`](define) expands to a bunch of `macro_rules!`, each of which is an alias. When you use `#![export_derive_aliases]`, these macros are tagged with `#[macro_export]` which
-//! makes every alias available at the crate root, but `#[doc(hidden)]` is automatically applied - users of your crate won't know about it. This is a necessity due to the limitations of
-//! Rust's declarative macros - it is **impossible** to export a macro from a crate without exporting it at the crate root
+//! For details, hover over `#![export_derive_aliases]` in your editor
 #![allow(clippy::crate_in_macro_def)]
 
 #[cfg_attr(
