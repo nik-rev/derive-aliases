@@ -15,7 +15,6 @@ macro_rules! assert_impls {
     };
 }
 
-#[allow(unused_imports)]
 pub mod derive_alias {
     mod foo {
         derive_aliases::define! {
