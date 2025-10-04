@@ -12,15 +12,16 @@ This crate improves Rust's `derive` macro by supporting user-defined Derive alia
 
 ```toml
 [dependencies]
-derive_aliases = "0.3"
+derive_aliases = "0.4"
 ```
 
 ## Usage
 
-Define aliases using [`define!`](define), and use them with [`#[derive]`](derive):
+Define aliases using [`define!`](https://docs.rs/derive_aliases/latest/derive_aliases/macro.define.html), and use them with [`#[derive]`](https://docs.rs/derive_aliases/latest/derive_aliases/attr.derive.html):
 
 ```rust
 mod derive_alias {
+    // Define the aliases
     derive_aliases::define! {
         Eq = ::core::cmp::PartialEq, ::core::cmp::Eq;
         Ord = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
@@ -42,8 +43,16 @@ The above expands to this:
 struct User;
 ```
 
-- `#[derive(..Eq)]` expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq)]`
-- `#[derive(..Ord)]` expands to `#[derive(..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`, which expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`
+- `#[derive(..Eq)]`
+   - expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq)]`
+- `#[derive(..Ord)]`
+   - expands to `#[derive(..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`
+   - ...which expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`
+
+**How it works:**
+
+- `derive_aliases::define!` expands to a bunch of `macro_rules!` items. Each macro item is the real alias
+- `#[derive_aliases::derive]` expands to a bunch of calls to macros at `crate::derive_alias`
 
 ## IDE Support
 
@@ -53,14 +62,14 @@ Hovering over an alias `#[derive(..Alias)]` shows *exactly* what it expands into
 
 ## Tip
 
-To globally override `#[std::derive]` with [`#[derive_aliases::derive]`](derive), add the following:
+To globally override `#[std::derive]` with [`#[derive_aliases::derive]`](https://docs.rs/derive_aliases/latest/derive_aliases/attr.derive.html), add the following:
 
 ```rust
 #[macro_use]
 extern crate derive_aliases;
 ```
 
-The above lets you [`define!`](macro@define) aliases and then use them anywhere in your crate!
+The above lets you [`define!`](https://docs.rs/derive_aliases/latest/derive_aliases/macro.define.html) aliases and then use them anywhere in your crate!
 
 I have put a **ton** of effort into optimizing `derive_aliases` to be as zero-cost as possible in terms of compile-time over the standard library's `derive`,
 so don't worry about any overhead of `#[derive_aliases::derive]` even when no aliases are used! `derive_aliases` has 0 dependencies (not even `quote` or `syn`!)
@@ -112,7 +121,7 @@ struct Example;
 
 All derive aliases must exist at your `crate::derive_alias`, so invoke the `derive_aliases::define!` macro there.
 
-You can break `define!` apart into multiple definitions:
+You can break [`define!`](https://docs.rs/derive_aliases/latest/derive_aliases/macro.define.html) apart into multiple definitions:
 
 ```rust
 mod derive_alias {
@@ -129,14 +138,47 @@ mod derive_alias {
         }
     }
 
-    pub use foo::{Eq, Ord};
-    pub use bar::{Copy, StdTraits};
+    pub(crate) use foo::{Eq, Ord};
+    pub(crate) use bar::{Copy, StdTraits};
 }
 
 #[derive(..StdTraits)]
 struct User;
 ```
 
-The above Just Works. Most importantly, derive aliases need to available at `crate::derive_alias`. This also allows you to share derive aliases across crates
+The above Just Works. Most importantly, derive aliases need to available at `crate::derive_alias`.
+
+## Sharing derives across multiple crates
+
+Use `#![export_derive_aliases]` inside of a call to [`derive_aliases::define!`](https://docs.rs/derive_aliases/latest/derive_aliases/macro.define.html) to allow aliases to be used in other crates:
+
+```rust
+pub mod derive_alias {
+    derive_aliases::define! {
+        #![export_derive_aliases]
+
+        Eq = ::core::cmp::PartialEq, ::core::cmp::Eq;
+        Copy = ::core::marker::Copy, ::core::clone::Clone;
+    }
+}
+```
+
+In another crate, import the aliases:
+
+```rust
+// crate which contains `Eq` and `Ord` aliases
+extern crate foo;
+
+pub mod derive_alias {
+    // import aliases from that crate
+    use foo::derive_alias::*;
+
+    derive_aliases::define! {
+        Ord = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
+    }
+}
+```
+
+For details, hover over `#![export_derive_aliases]` in your editor
 
 <!-- cargo-rdme end -->
