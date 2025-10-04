@@ -17,6 +17,7 @@
 //!
 //! ```
 //! mod derive_alias {
+//!     // Define the aliases
 //!     derive_aliases::define! {
 //!         Eq = ::core::cmp::PartialEq, ::core::cmp::Eq;
 //!         Ord = ..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord;
@@ -45,8 +46,10 @@
 //!    - expands to `#[derive(..Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`
 //!    - ...which expands to `#[derive(::core::cmp::PartialEq, ::core::cmp::Eq, ::core::cmp::PartialOrd, ::core::cmp::Ord)]`
 //!
-//! **How it works:** `derive_aliases::define!` expands to a bunch of `macro_rules!` items. Each macro item is the real alias, and
-//! these macros are composed together to generate the actual `#[std::derive]` on your item.
+//! **How it works:**
+//!
+//! - `derive_aliases::define!` expands to a bunch of `macro_rules!` items. Each macro item is the real alias
+//! - `#[derive_aliases::derive]` expands to a bunch of calls to macros at `crate::derive_alias`
 //!
 //! # IDE Support
 //!
