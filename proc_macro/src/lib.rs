@@ -72,21 +72,9 @@ pub fn define(tts: TokenStream) -> TokenStream {
     // We parse each alias declaration token-by-token. If the current alias
     // declaration has a syntax error we'll just report it and skip parsing the current alias.
     // This allows us to collect as many errors as possible before reporting them.
-    macro_rules! skip_current_alias_declaration {
-        () => {
-            loop {
-                match ts.tt() {
-                    // reached end of the alias declaration
-                    Some(TokenTree::Punct(punct)) if punct == ';' => break,
-                    // reached end of the input
-                    None => break,
-                    // eat everything until the next alias declaration,
-                    // that way we can report multiple errors
-                    _ => (),
-                }
-            }
-        };
-    }
+
+    let is_entity_terminator = |char| char == ';' || char == ',';
+    let is_alias_decl_terminator = |char| char == ';';
 
     // If we have this attribute:
     //
@@ -160,7 +148,7 @@ pub fn define(tts: TokenStream) -> TokenStream {
                 tt.span(),
                 "expected alias name (identifier)",
             ));
-            skip_current_alias_declaration!();
+            ts.eat_until_char(is_alias_decl_terminator);
             continue 'parse_alias_declaration;
         };
 
@@ -168,7 +156,12 @@ pub fn define(tts: TokenStream) -> TokenStream {
         //       ^
         if ts.char('=').is_none() {
             compile_errors.push(ts.compile_error("expected `=`"));
-            skip_current_alias_declaration!();
+
+            // Do this as our goal is to recover as much as possible. When rust-analyzer gets more
+            // things to work with, DX is better
+            nested_alias_map.insert(alias_name.to_string(), (alias_name.span(), Vec::new()));
+
+            ts.eat_until_char(is_alias_decl_terminator);
             continue 'parse_alias_declaration;
         };
 
@@ -195,15 +188,16 @@ pub fn define(tts: TokenStream) -> TokenStream {
                     if ts.char('.').is_none() {
                         compile_errors
                             .push(ts.compile_error("expected `.` after `.` to form `..Alias`"));
-                        skip_current_alias_declaration!();
+                        ts.eat_until_char(is_entity_terminator);
+                        continue 'parse_entity;
                     }
 
                     let Some(alias) = ts.ident() else {
                         compile_errors.push(
                             ts.compile_error("expected identifier after `..` to form `..Alias`"),
                         );
-                        skip_current_alias_declaration!();
-                        continue 'parse_alias_declaration;
+                        ts.eat_until_char(is_entity_terminator);
+                        continue 'parse_entity;
                     };
 
                     entities.push(Entity::Alias(alias));
@@ -225,8 +219,8 @@ pub fn define(tts: TokenStream) -> TokenStream {
                         }
                         _ => {
                             compile_errors.push(ts.compile_error("expected `;`, or `,`"));
-                            skip_current_alias_declaration!();
-                            continue 'parse_alias_declaration;
+                            ts.eat_until_char(is_entity_terminator);
+                            continue 'parse_entity;
                         }
                     }
                 }
@@ -245,7 +239,7 @@ pub fn define(tts: TokenStream) -> TokenStream {
                         "and use `::core::marker::Copy` instead",
                         " of just `Copy`",
                     )));
-                    skip_current_alias_declaration!();
+                    ts.eat_until_char(is_entity_terminator);
                     continue 'parse_entity;
                 }
                 // Parsing absolute path to a derive
@@ -261,8 +255,8 @@ pub fn define(tts: TokenStream) -> TokenStream {
                                 "expected `:` to form a path like `::std::hash::Hash`",
                             ),
                         );
-                        skip_current_alias_declaration!();
-                        continue 'parse_alias_declaration;
+                        ts.eat_until_char(is_entity_terminator);
+                        continue 'parse_entity;
                     };
 
                     // ::std::hash::Hash
@@ -271,8 +265,8 @@ pub fn define(tts: TokenStream) -> TokenStream {
                         Ok(path) => path,
                         Err(err) => {
                             compile_errors.push(err);
-                            skip_current_alias_declaration!();
-                            continue 'parse_alias_declaration;
+                            ts.eat_until_char(is_entity_terminator);
+                            continue 'parse_entity;
                         }
                     };
 
@@ -310,14 +304,14 @@ pub fn define(tts: TokenStream) -> TokenStream {
                         }
                         _ => {
                             compile_errors.push(ts.compile_error("expected `;` or `,`"));
-                            skip_current_alias_declaration!();
-                            continue 'parse_alias_declaration;
+                            ts.eat_until_char(is_entity_terminator);
+                            continue 'parse_entity;
                         }
                     }
                 }
                 _ => {
                     compile_errors.push(ts.compile_error("expected absolute path like `::std::hash::Hash`, alias like `..Alias` or `;` signifying end of alias declaration"));
-                    skip_current_alias_declaration!();
+                    ts.eat_until_char(is_alias_decl_terminator);
                     continue 'parse_alias_declaration;
                 }
             }

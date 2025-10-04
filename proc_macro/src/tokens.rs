@@ -89,6 +89,27 @@ impl TokensIter {
         CompileError::new(self.span, message)
     }
 
+    /// Eat all the tokens until `f` returns `true`. On punctuation tokens, it is passed the character. Use for error recovery
+    pub fn eat_until_char(&mut self, f: impl Fn(char) -> bool) {
+        loop {
+            match self.tt() {
+                // reached end of the alias declaration
+                Some(TokenTree::Punct(punct)) if punct == ',' || punct == ';' => {
+                    if f(punct.as_char()) {
+                        break;
+                    } else {
+                        // predicate wasn't satisfied. continue
+                    }
+                }
+                // reached end of the input
+                None => break,
+                // eat everything until the next alias declaration,
+                // that way we can report multiple errors
+                _ => (),
+            }
+        }
+    }
+
     /// Peek the next token tree
     pub fn peek_tt(&mut self) -> Option<&TokenTree> {
         self.stream.peek()
