@@ -172,14 +172,6 @@ impl TokensIter {
         }
     }
 
-    /// Peek the next token punctuation if it is an identifier
-    pub fn peek_ident(&mut self) -> Option<&Ident> {
-        match self.peek_tt() {
-            Some(TokenTree::Ident(ident)) => Some(ident),
-            _ => None,
-        }
-    }
-
     /// Get the next token punctuation if it is an identifier
     pub fn ident(&mut self) -> Option<Ident> {
         match self.stream.peek() {
@@ -332,7 +324,6 @@ impl IntoTokens for Path {
                         //      ^^    ^^
                         separator
                             .into_tokens()
-                            .into_iter()
                             // path segment
                             //
                             // ::std::hash::HashMap
