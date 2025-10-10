@@ -42,11 +42,6 @@ See the [crate-level](https://docs.rs/derive_aliases/latest/derive_aliases) docu
 // they see the actual documentation, but without having duplicate documentation in the HTML documentation
 //
 // ---
-//
-// when doing `#[macro_use] extern crate proc` we will also globally import this macro
-// and it will be suggested by rust_analyzer. but since this macro must be called just once,
-// we don't want rust_analyzer to suggest it
-#[cfg_attr(not(doc), doc(hidden))]
 #[cfg_attr(not(feature = "show"), doc(hidden))]
 #[allow(unused_assignments)]
 #[proc_macro]

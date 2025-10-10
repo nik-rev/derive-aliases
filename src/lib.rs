@@ -62,7 +62,7 @@
 //! To globally override `#[std::derive]` with [`#[derive_aliases::derive]`](derive), add the following:
 //!
 //! ```
-//! #[macro_use]
+//! #[macro_use(derive)]
 //! extern crate derive_aliases;
 //! ```
 //!

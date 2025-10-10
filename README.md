@@ -65,7 +65,7 @@ Hovering over an alias `#[derive(..Alias)]` shows *exactly* what it expands into
 To globally override `#[std::derive]` with [`#[derive_aliases::derive]`](https://docs.rs/derive_aliases/latest/derive_aliases/attr.derive.html), add the following:
 
 ```rust
-#[macro_use]
+#[macro_use(derive)]
 extern crate derive_aliases;
 ```
 
