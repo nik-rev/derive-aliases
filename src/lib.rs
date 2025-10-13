@@ -1,7 +1,7 @@
 //! [![crates.io](https://img.shields.io/crates/v/derive_aliases?style=flat-square&logo=rust)](https://crates.io/crates/derive_aliases)
 //! [![docs.rs](https://img.shields.io/badge/docs.rs-derive_aliases-blue?style=flat-square&logo=docs.rs)](https://docs.rs/derive_aliases)
 //! ![license](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue?style=flat-square)
-//! ![msrv](https://img.shields.io/badge/msrv-1.60-blue?style=flat-square&logo=rust)
+//! ![msrv](https://img.shields.io/badge/msrv-1.75-blue?style=flat-square&logo=rust)
 //! [![github](https://img.shields.io/github/stars/nik-rev/derive-aliases)](https://github.com/nik-rev/derive-aliases)
 //!
 //! This crate improves Rust's `derive` macro by supporting user-defined Derive aliases.
