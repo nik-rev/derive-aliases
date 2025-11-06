@@ -35,4 +35,4 @@ warning: unused macro definition: `Eq`
 3 |         Eq = ::core:cmp::Eq, ::core::cmp::PartialEq;
   |         ^^
   |
-  = note: `#[warn(unused_macros)]` on by default
+  = note: `#[warn(unused_macros)]` (part of `#[warn(unused)]`) on by default
