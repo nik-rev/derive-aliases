@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "derive_aliases"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "derive_aliases_proc_macro",
  "serde",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "derive_aliases_proc_macro"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "derive_aliases",
 ]
