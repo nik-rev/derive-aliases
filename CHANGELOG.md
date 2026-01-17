@@ -1,3 +1,10 @@
+# v0.4.8
+
+## Fixes
+
+Fixed an issue where applying more than 1 `#[derive_aliases::derive]` attribute in a row
+would mess up name resolution for helper attributes ([#5](https://github.com/nik-rev/derive-aliases/pull/5))
+
 # v0.4.0
 
 By default, the derive aliases are private within your crate. To allow other crates to use

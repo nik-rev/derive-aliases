@@ -31,3 +31,5 @@ categories = ["development-tools", "development-tools::procedural-macro-helpers"
 # only used in doc example
 zerocopy = { version = "0.8", features = ["derive"] }
 trybuild = "1.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_with = "3.14.1"
