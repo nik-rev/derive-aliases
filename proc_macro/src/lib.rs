@@ -14,6 +14,94 @@ mod tokens;
 
 use tokens::CompileError;
 
+/// Returns `{ true }`
+fn cfg_true() -> TokenTree {
+    TokenTree::Group(Group::new(
+        Delimiter::Brace,
+        TokenStream::from_iter([TokenTree::Ident(Ident::new("true", Span::call_site()))]),
+    ))
+}
+
+/// Visibility mode defines who can see derive aliases
+///
+/// It is a hack that is a necessary evil due to there being no way to export a `macro_rules!` macro
+/// from the crate *without* using `#[macro_export]` on it
+enum VisibilityMode {
+    /// User specified `#![export_derive_aliases]`.
+    ///
+    /// `#[macro_export]` is applied to every generated `macro_rules!` item
+    MacroExport {
+        /// #![export_derive_aliases]
+        ///    ^^^^^^^^^^^^^^^^^^^^^
+        kw_export_derive_aliases: Span,
+    },
+    /// Default visibility mode for aliases: only accessible within the defining crate
+    CrateLocal,
+}
+
+impl VisibilityMode {
+    pub fn parse(ts: &mut TokensIter, compile_errors: &mut Vec<CompileError>) -> Self {
+        // If we have this attribute:
+        //
+        // #![export_derive_aliases]
+        //
+        // Then we'll apply `#[macro_export]` to all `macro_rules!` aliases
+        let export_derive_aliases = match ts.peek_char('#') {
+            Some(_) => 'ret: {
+                // #![export_derive_aliases]
+                // ^
+                ts.tt();
+
+                // #![export_derive_aliases]
+                //  ^
+                if ts.char('!').is_none() {
+                    compile_errors.push(ts.compile_error("expected `#![export_derive_aliases]`"));
+                };
+
+                // #![export_derive_aliases]
+                //   ^^^^^^^^^^^^^^^^^^^^^^^
+                let Some(stream) = ts.group(Delimiter::Bracket) else {
+                    compile_errors.push(ts.compile_error("expected `#![export_derive_aliases]`"));
+                    break 'ret None;
+                };
+                let mut stream = TokensIter {
+                    stream: stream.into_iter().peekable(),
+                    span: ts.span,
+                };
+
+                // #![export_derive_aliases]
+                //    ^^^^^^^^^^^^^^^^^^^^^
+                let Some(ident_span) = stream
+                    .ident()
+                    .filter(|ident| ident.to_string() == "export_derive_aliases")
+                else {
+                    compile_errors.push(ts.compile_error("expected `#![export_derive_aliases]`"));
+                    break 'ret None;
+                };
+
+                Some(ident_span)
+            }
+            None => None,
+        };
+
+        match export_derive_aliases {
+            Some(span) => Self::MacroExport {
+                kw_export_derive_aliases: span.span(),
+            },
+            None => Self::CrateLocal,
+        }
+    }
+
+    pub fn into_ident(&self) -> Ident {
+        let mode = match self {
+            VisibilityMode::MacroExport { .. } => "b",
+            VisibilityMode::CrateLocal => "a",
+        };
+
+        Ident::new(mode, Span::call_site())
+    }
+}
+
 #[cfg_attr(
     not(doc),
     doc = "\
@@ -76,53 +164,7 @@ pub fn define(tts: TokenStream) -> TokenStream {
     // #![export_derive_aliases]
     //
     // Then we'll apply `#[macro_export]` to all `macro_rules!` aliases
-    let export_derive_aliases = match ts.peek_char('#') {
-        Some(_) => 'ret: {
-            // #![export_derive_aliases]
-            // ^
-            ts.tt();
-
-            // #![export_derive_aliases]
-            //  ^
-            if ts.char('!').is_none() {
-                compile_errors.push(ts.compile_error("expected `#![export_derive_aliases]`"));
-            };
-
-            // #![export_derive_aliases]
-            //   ^^^^^^^^^^^^^^^^^^^^^^^
-            let Some(stream) = ts.group(Delimiter::Bracket) else {
-                compile_errors.push(ts.compile_error("expected `#![export_derive_aliases]`"));
-                break 'ret None;
-            };
-            let mut stream = TokensIter {
-                stream: stream.into_iter().peekable(),
-                span: ts.span,
-            };
-
-            // #![export_derive_aliases]
-            //    ^^^^^^^^^^^^^^^^^^^^^
-            let Some(ident_span) = stream
-                .ident()
-                .filter(|ident| ident.to_string() == "export_derive_aliases")
-            else {
-                compile_errors.push(ts.compile_error("expected `#![export_derive_aliases]`"));
-                break 'ret None;
-            };
-
-            Some(ident_span)
-        }
-        None => None,
-    };
-
-    // Visibility mode defines who can see the macro. It is a hack that is
-    // necessary because there's no way to export macro from the crate without using `#[macro_export]` on it
-    let visibility_mode = if export_derive_aliases.is_some() {
-        // visibility `b`: can be accessed outside of the crate
-        Ident::new("b", Span::call_site())
-    } else {
-        // visibility `a`: can be accessed inside of crate, but not outside
-        Ident::new("a", Span::call_site())
-    };
+    let visibility_mode = VisibilityMode::parse(&mut ts, &mut compile_errors);
 
     // Loop that parses every alias declaration
     //
@@ -377,94 +419,50 @@ pub fn define(tts: TokenStream) -> TokenStream {
     // All of these are just `use ... as _` the only reason we have them
     // is to get access to the `Span` of whatever item they import, which we'll
     // use in documentation to get nice docs-on-hover and goto-definition
-    let mut dummy_use_statements = if let Some(derive_aliases) = export_derive_aliases {
-        TokenStream::from_iter([
-            TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-            TokenTree::Group(Group::new(
-                Delimiter::Bracket,
-                TokenStream::from_iter([
-                    TokenTree::Ident(Ident::new("doc", Span::call_site())),
-                    TokenTree::Punct(Punct::new('=', Spacing::Joint)),
-                    TokenTree::Literal(Literal::string("\
-The `#![export_derive_aliases]` marker allows other crates to use these derive aliases.
-
-# Details
-
-The following invocation in `lib.rs`:
-
-```ignore
-pub mod derive_alias {
-    derive_aliases::define! {
-        Copy = ::core::marker::Copy, ::core::clone::Clone;
-        Eq = ::core::cmp::Eq, ::core::cmp::PartialEq;
-    }
-}
-```
-
-Expands to the following code:
-
-## Normally
-
-```ignore
-pub mod derive_alias {
-    macro_rules! Copy { /* omitted */ }
-    pub(crate) use Copy;
-
-    macro_rules! Eq { /* omitted */ }
-    pub(crate) use Eq;
-}
-```
-
-Making `crate::derive_alias::Copy` and `crate::derive_alias::Eq` both resolve to the actual aliases.
-The entire crate can access these aliases. However, another crate depending on the one where the `define!`
-macro was invoked from won't be able to see any of the aliases.
-
-## With `#![export_derive_aliases]`
-
-```ignore
-pub mod derive_alias {
-    #[doc(hidden)]
-    #[macro_export]
-    macro_rules! Copy { /* omitted */ }
-    #[doc(inline)]
-    pub use Copy;
-
-    #[doc(hidden)]
-    #[macro_export]
-    macro_rules! Eq { /* omitted */ }
-    #[doc(inline)]
-    pub use Eq;
-}
-```
-
-If your crate is called `foo`, and you export these aliases - another crate depending on `foo` will be
-able to access the aliases as `foo::derive_alias::Eq`.
-
-**Note:** This also exports the macro at the crate root, so another crate can access the alias as `foo::Eq` instead of
-`foo::derive_alias::Eq`.
-
-Crates depending on your crate will only see the derive aliases in `derive_aliases` module,
-not at the crate root because of the `#[doc(hidden)]`")),
-                ]),
-            )),
-            TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-            TokenTree::Group(Group::new(
-                Delimiter::Bracket,
-                TokenStream::from_iter([
-                    TokenTree::Ident(Ident::new("allow", Span::call_site())),
-                    TokenTree::Group(Group::new(
-                        Delimiter::Parenthesis,
-                        TokenTree::Ident(Ident::new("non_camel_case_types", Span::call_site()))
-                            .into(),
-                    )),
-                ]),
-            )),
-            TokenTree::Ident(Ident::new("struct", Span::call_site())),
-            TokenTree::Ident(Ident::new("export_derive_aliases", derive_aliases.span())),
-            TokenTree::Punct(Punct::new(';', Spacing::Joint)),
-        ])
-    } else {
-        TokenStream::new()
+    //
+    // #[doc = "..."]
+    // #[allow(non_camel_case_types)]
+    // struct export_derive_aliases;
+    let mut dummy_use_statements = match visibility_mode {
+        VisibilityMode::MacroExport {
+            kw_export_derive_aliases,
+        } => {
+            TokenStream::from_iter([
+                // #[doc = "..."]
+                TokenTree::Punct(Punct::new('#', Spacing::Joint)),
+                TokenTree::Group(Group::new(
+                    Delimiter::Bracket,
+                    TokenStream::from_iter([
+                        TokenTree::Ident(Ident::new("doc", Span::call_site())),
+                        TokenTree::Punct(Punct::new('=', Spacing::Joint)),
+                        TokenTree::Literal(Literal::string(include_str!(
+                            "export_derive_aliases.md"
+                        ))),
+                    ]),
+                )),
+                // #[allow(non_camel_case_types)]
+                TokenTree::Punct(Punct::new('#', Spacing::Joint)),
+                TokenTree::Group(Group::new(
+                    Delimiter::Bracket,
+                    TokenStream::from_iter([
+                        TokenTree::Ident(Ident::new("allow", Span::call_site())),
+                        TokenTree::Group(Group::new(
+                            Delimiter::Parenthesis,
+                            TokenTree::Ident(Ident::new("non_camel_case_types", Span::call_site()))
+                                .into(),
+                        )),
+                    ]),
+                )),
+                // struct export_derive_aliases;
+                TokenTree::Ident(Ident::new("struct", Span::call_site())),
+                TokenTree::Ident(Ident::new(
+                    "export_derive_aliases",
+                    kw_export_derive_aliases,
+                )),
+                TokenTree::Punct(Punct::new(';', Spacing::Joint)),
+            ])
+        }
+        VisibilityMode::CrateLocal => TokenStream::new(),
     };
 
     // Build up the `flat_alias_map`
@@ -563,51 +561,59 @@ not at the crate root because of the `#[doc(hidden)]`")),
         .flat_map(|(alias, (alias_span, derives, mut extern_aliases))| {
             // The Input passed into the `new_alias!`
             //
-            // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+            // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
             let input_into_new_alias_macro = [
                 // Visibility mode `a` or `b`
                 //
-                // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
                 // ^
-                TokenTree::Ident(visibility_mode.clone()),
+                TokenTree::Ident(visibility_mode.into_ident()),
                 // Dollar token: The macro creates macros, so we can't use '$' in it. This becomes `$_:tt` so
                 // we use `$_` inside the macro
                 //
-                // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
                 //   ^
                 TokenTree::Punct(Punct::new('$', proc_macro::Spacing::Alone)),
                 // Real name of the alias
                 //
-                // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
                 //     ^^^
                 //
                 // IMPORTANT: `alias_span` here allows us to associate definition of the actual alias
                 // with usages of it. This means when we do "goto definition" it takes us to the ACTUAL alias definition
                 // Very, very important to not remove this for good DX
                 TokenTree::Ident(Ident::new(alias, *alias_span)),
-                // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
+                // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
                 //        ^
                 TokenTree::Punct(Punct::new('!', proc_macro::Spacing::Joint)),
             ]
             .into_iter()
             // The input is then following by a bunch of paths to all the derives the macro expands to,
-            // wrapped in `[...]`. so like `[::core::hash::Hash]`. That's because we want to compare 2 paths,
+            // wrapped in `[...]`. so like `[ { cfg } ::core::hash::Hash]`. That's because we want to compare 2 paths,
             // but `:path` specifiers can't be compared, so we compare `[$($tt:tt)*]` instead
             //
-            // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
-            //          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            // That `cfg` is any `#[cfg(cfg)]` attributes the alias expects
+            //
+            // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
+            //          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
             .chain(derives.iter().flat_map(|derive| {
                 [
-                    // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
-                    // a        ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
+                    // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
+                    // a        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                     TokenTree::Group(Group::new(
                         Delimiter::Bracket,
-                        // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
-                        // a         ^^^^^^^^^^^^^^^^^^    ^^^^^^^^^^^^^^^^^^
-                        TokenStream::from_iter(derive.clone().into_tokens()),
+                        TokenStream::from_iter(
+                            // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
+                            // a          ^^^^^^^                        ^^^^^^^
+                            [cfg_true()]
+                                .into_iter()
+                                // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
+                                // a                  ^^^^^^^^^^^^^^^^^^             ^^^^^^^^^^^^^^^^^^
+                                .chain(derive.clone().into_tokens()),
+                        ),
                     )),
-                    // a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],
-                    // a                            ^                     ^
+                    // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
+                    // a                                     ^                              ^
                     TokenTree::Punct(Punct::new(',', proc_macro::Spacing::Joint)),
                 ]
             }));
@@ -615,52 +621,52 @@ not at the crate root because of the `#[doc(hidden)]`")),
             // NOTE: Treat the last extern alias specially, because we'll actually invoke it.
             // The nested extern aliases will be invoked by this one, one-after-the-other
             if let Some(last_extern_alias) = extern_aliases.pop() {
-                // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
-                // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+                // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                 TokenStream::from_iter([
-                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],]] }
                     // ^^^^^
                     TokenTree::Ident(Ident::new("crate", Span::call_site())),
-                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],]] }
                     //      ^^
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],]] }
                     //        ^^^^^^^^^^^^
                     TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
-                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],]] }
                     //                    ^^
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
                     TokenTree::Punct(Punct::new(':', proc_macro::Spacing::Joint)),
-                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],]] }
                     //                      ^^^
                     TokenTree::Ident(last_extern_alias),
-                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],]] }
                     //                         ^
                     TokenTree::Punct(Punct::new('!', proc_macro::Spacing::Joint)),
-                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
-                    //                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+                    //                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                     TokenTree::Group(Group::new(
                         Delimiter::Brace,
                         TokenStream::from_iter([
-                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],]] }
+                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],]] }
                             //                            ^
                             TokenTree::Punct(Punct::new('%', Spacing::Joint)),
-                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
-                            //                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+                            //                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                             TokenTree::Group(Group::new(
                                 Delimiter::Bracket,
                                 extern_aliases.into_iter().fold(
                                     TokenStream::from_iter(input_into_new_alias_macro),
                                     |acc, alias| {
                                         TokenStream::from_iter([
-                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
                                             //                               ^^^^^
                                             TokenTree::Ident(Ident::new(
                                                 "crate",
                                                 Span::call_site(),
                                             )),
-                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
                                             //                                    ^^
                                             TokenTree::Punct(Punct::new(
                                                 ':',
@@ -670,13 +676,13 @@ not at the crate root because of the `#[doc(hidden)]`")),
                                                 ':',
                                                 proc_macro::Spacing::Joint,
                                             )),
-                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
                                             //                                      ^^^^^^^^^^^^
                                             TokenTree::Ident(Ident::new(
                                                 "derive_alias",
                                                 Span::call_site(),
                                             )),
-                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
                                             //                                                  ^^
                                             TokenTree::Punct(Punct::new(
                                                 ':',
@@ -686,17 +692,17 @@ not at the crate root because of the `#[doc(hidden)]`")),
                                                 ':',
                                                 proc_macro::Spacing::Joint,
                                             )),
-                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
                                             //                                                    ^^
                                             TokenTree::Ident(alias),
-                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
                                             //                                                      ^
                                             TokenTree::Punct(Punct::new(
                                                 ',',
                                                 proc_macro::Spacing::Joint,
                                             )),
-                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [::core::hash::Hash], [::core::fmt::Debug],] ] }
-                                            //                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                            // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+                                            //                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                                             TokenTree::Group(Group::new(Delimiter::Bracket, acc)),
                                         ])
                                     },
@@ -855,17 +861,7 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         let regular_derives = regular_derives.into_iter().map(|derive| {
             TokenTree::Group(Group::new(
                 Delimiter::Bracket,
-                TokenStream::from_iter(
-                    [TokenTree::Group(Group::new(
-                        Delimiter::Brace,
-                        TokenStream::from_iter([TokenTree::Ident(Ident::new(
-                            "true",
-                            Span::call_site(),
-                        ))]),
-                    ))]
-                    .into_iter()
-                    .chain(derive.into_tokens()),
-                ),
+                TokenStream::from_iter([cfg_true()].into_iter().chain(derive.into_tokens())),
             ))
         });
 
