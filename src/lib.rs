@@ -836,7 +836,7 @@ macro_rules! __internal_derive_aliases_new_alias {
                     $_(
                         #[cfg_attr(
                             $_($_ regular_derives_cfg)*,
-                            ::core::prelude::v1::derive($_ regular_derives)
+                            ::core::prelude::v1::derive($_($_ regular_derives)*)
                         )]
                     )*
 
@@ -845,7 +845,7 @@ macro_rules! __internal_derive_aliases_new_alias {
                     // <derive-paths>
                     $_(
                         #[cfg_attr(
-                            $_($_ regular_derives_cfg)*,
+                            $_($_ deduplicated_cfg)*,
                             ::core::prelude::v1::derive($_ deduplicated)
                         )]
                     )*
