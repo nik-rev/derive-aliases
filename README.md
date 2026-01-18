@@ -63,7 +63,7 @@ struct User;
 
 Hovering over an alias `#[derive(..Alias)]` shows *exactly* what it expands into, and even Goto Definition directly brings you where the alias is defined.
 
-![IDE Support](https://raw.githubusercontent.com/nik-rev/derive-aliases/main/ide_support.png)
+![IDE Support](https://raw.githubusercontent.com/nik-rev/derive-aliases/main/assets/ide_support.png)
 
 ## Tip
 
