@@ -674,11 +674,15 @@ macro_rules! __internal_derive_aliases_new_alias {
                         $_($_ regular_derives:tt)*
                     ]
 
+                    // [
+                    //     $_(#[$_($_ meta:tt)*])*
+                    //     // $kw is either `pub`, `struct`, `enum` or `union`. Needed
+                    //     // to dis-ambiguate
+                    //     $_ kw:ident $_($_ item:tt)*
+                    // ]
+
                     [
-                        $_(#[$_($_ meta:tt)*])*
-                        // $kw is either a `struct`, `enum` or `union`. Needed
-                        // to dis-ambiguate
-                        $_ kw:ident $_($_ item:tt)*
+                        $_($_ item:tt)*
                     ]
 
                     // FINISHED = processed all derives, none left
@@ -690,13 +694,6 @@ macro_rules! __internal_derive_aliases_new_alias {
                         [ $_ deduplicated:path ],
                     )*]
                 ) => {
-                    $_(#[$_($_ meta)*])*
-
-                    // This derive is applied as the last attribute.
-                    // This NEEDS to happen otherwise we will run into derive
-                    // helper attribute name resolution errors:
-                    //
-                    // https://github.com/nik-rev/derive-aliases/issues/4
                     #[::core::prelude::v1::derive(
                         // All derives that did not come from an expansion
                         $_(
@@ -711,9 +708,7 @@ macro_rules! __internal_derive_aliases_new_alias {
                             $($derives)*,
                         )*
                     )]
-
-                    // the item we are applying the derives to
-                    $_ kw $_ ($_ item) *
+                    $_ ($_ item) *
                 };
 
                 // Remove each derive from the set
