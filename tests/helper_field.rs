@@ -1,5 +1,6 @@
 //! Test that multiple `derive_aliases::derive` attributes
 //! in a row won't mess up helper attribute name resolution
+//! on the field
 //!
 //! https://github.com/nik-rev/derive-aliases/issues/4
 #![allow(unused)]
@@ -22,6 +23,15 @@ struct A {
     field: Option<()>,
 }
 
+#[derive(serde::Serialize)]
+#[derive_aliases::derive(..Clone)]
+struct A2 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    field: Option<()>,
+}
+
+// Swap the order
+
 #[derive_aliases::derive(..Clone)]
 #[derive_aliases::derive(..Serialize)]
 /*^
@@ -33,13 +43,13 @@ struct B {
     field: Option<()>,
 }
 
-#[serde_with::skip_serializing_none]
-#[derive_aliases::derive(..Clone)]
+#[derive(core::clone::Clone)]
 #[derive_aliases::derive(..Serialize)]
 /*^
 $(::core::clone::Clone,)
 $(::serde::Serialize,)
 */
-struct C {
+struct B2 {
+    #[serde(skip_serializing_if = "Option::is_none")]
     field: Option<()>,
 }
