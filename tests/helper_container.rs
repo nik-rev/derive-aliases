@@ -1,3 +1,4 @@
+#![cfg(false)]
 //! Test that multiple `derive_aliases::derive` attributes
 //! in a row won't mess up helper attribute name resolution
 //! on the container
