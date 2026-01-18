@@ -833,6 +833,135 @@ See the [crate-level](https://docs.rs/derive_aliases/latest/derive_aliases) docu
 #[proc_macro_attribute]
 #[cfg_attr(not(feature = "show"), doc(hidden))]
 pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut regular_derives = Tokens(TokenStream::new());
+    let mut aliases = Vec::new();
+    let mut compile_errors = Vec::new();
+    extract_derives(
+        attr,
+        &mut regular_derives,
+        &mut aliases,
+        &mut compile_errors,
+    );
+    // all the tokens for "compile_error!(...)" invocations, to be inserted
+    // alongside all other input
+    let compile_errors = compile_errors
+        .into_iter()
+        .flat_map(|compile_error| compile_error.into_tokens());
+
+    // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
+    //
+    // We treat the last alias specially
+    if let Some(first_alias) = aliases.pop() {
+        let innermost_ts = TokenStream::from_iter([
+            TokenTree::Punct(Punct::new('@', Spacing::Joint)),
+            TokenTree::Group(regular_derives.inside_of(Delimiter::Bracket)),
+            TokenTree::Group(Group::new(Delimiter::Bracket, item)),
+        ]);
+
+        // Build up nesting
+        //
+        // @ [Debug,] [struct Foo;]
+        // crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])
+        // crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;]))
+        let inner = aliases.into_iter().fold(innermost_ts, |acc, current| {
+            TokenStream::from_iter([
+                TokenTree::Ident(Ident::new("crate", Span::call_site())),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Ident(current),
+                TokenTree::Punct(Punct::new(',', Spacing::Joint)),
+                TokenTree::Group(Group::new(Delimiter::Parenthesis, acc)),
+            ])
+        });
+
+        // Wrap in a final invocation
+        //
+        // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
+        let stream = TokenStream::from_iter(inner.into_iter().chain([TokenTree::Group(
+            Group::new(Delimiter::Bracket, TokenStream::new()),
+        )]));
+
+        TokenStream::from_iter(
+            [
+                TokenTree::Ident(Ident::new("crate", Span::call_site())),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Ident(first_alias),
+                TokenTree::Punct(Punct::new('!', Spacing::Joint)),
+                TokenTree::Group(Group::new(Delimiter::Brace, stream)),
+            ]
+            .into_iter()
+            .chain(compile_errors),
+        )
+    } else {
+        // No derive aliases used.
+        // Just pass all derives to the standard library's
+        TokenStream::from_iter(
+            [
+                TokenTree::Punct(Punct::new('#', Spacing::Joint)),
+                TokenTree::Group(Group::new(
+                    Delimiter::Bracket,
+                    TokenStream::from_iter([
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Ident(Ident::new("core", Span::call_site())),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Ident(Ident::new("prelude", Span::call_site())),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Ident(Ident::new("v1", Span::call_site())),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Ident(Ident::new("derive", Span::call_site())),
+                        TokenTree::Group(regular_derives.inside_of(Delimiter::Parenthesis)),
+                    ]),
+                )),
+            ]
+            .into_iter()
+            .chain(item)
+            .chain(compile_errors),
+        )
+    }
+}
+
+/// Extracts derives and derive aliases from a #[derive] attribute.
+///
+/// Given:
+///
+/// ```ignore
+/// #[derive(..Copy, std::hash::Hash, ..StdTraits, Clone)]
+/// ```
+///
+/// Extracts all the "regular derives" (derives that are not aliases),
+/// and also all the "derive aliases" (derives with `..Alias` syntax) into the
+/// second field of tuple
+///
+/// The result for the above will look like this:
+///
+/// ```ignore
+/// (
+///     quote!(std::hash::Hash, Clone,),
+///     vec![parse_quote!(Copy), parse_quote!(Clone)]
+/// )
+/// ```
+///
+/// Notably, each regular derive will always be followed by a comma,
+/// even if that comma wasn't in the original input
+fn extract_derives(
+    attr: TokenStream,
+    // This is just the raw TokenStream passed directly to `#[std::derive(..)]`
+    regular_derives: &mut Tokens,
+    // A list of derive aliases, which we will expand at `crate::derive_alias::{alias}`
+    aliases: &mut Vec<Ident>,
+    compile_errors: &mut Vec<CompileError>,
+) {
     // Contains both regular derives and derive aliases
     //
     // ..Alias, Derive1, ..Alias2, std::Derive2
@@ -840,16 +969,6 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         stream: attr.into_iter().peekable(),
         span: Span::call_site(),
     };
-
-    // This is just the raw TokenStream passed directly to `#[std::derive(..)]`
-    let mut regular_derives = Tokens(TokenStream::new());
-
-    let mut compile_errors = Vec::new();
-
-    // A list of derive aliases, which we will expand at `crate::derive_alias::{alias}`
-    let mut aliases = Vec::new();
-
-    // panic!("{attr}");
 
     while let Some(tt) = attr.peek_tt() {
         if matches!(tt, TokenTree::Punct(dot) if *dot == '.') {
@@ -915,87 +1034,6 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
         }
-    }
-
-    let _ = attr;
-
-    let regular_derives = regular_derives;
-
-    // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
-    //
-    // We treat the last alias specially
-    if let Some(first_alias) = aliases.pop() {
-        let innermost_ts = TokenStream::from_iter([
-            TokenTree::Punct(Punct::new('@', Spacing::Joint)),
-            TokenTree::Group(regular_derives.inside_of(Delimiter::Bracket)),
-            TokenTree::Group(Group::new(Delimiter::Bracket, item)),
-        ]);
-
-        // Build up nesting
-        //
-        // @ [Debug,] [struct Foo;]
-        // crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])
-        // crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;]))
-        let inner = aliases.into_iter().fold(innermost_ts, |acc, current| {
-            TokenStream::from_iter([
-                TokenTree::Ident(Ident::new("crate", Span::call_site())),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Ident(current),
-                TokenTree::Punct(Punct::new(',', Spacing::Joint)),
-                TokenTree::Group(Group::new(Delimiter::Parenthesis, acc)),
-            ])
-        });
-
-        // Wrap in a final invocation
-        //
-        // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
-        let stream = TokenStream::from_iter(inner.into_iter().chain([TokenTree::Group(
-            Group::new(Delimiter::Bracket, TokenStream::new()),
-        )]));
-
-        TokenStream::from_iter([
-            TokenTree::Ident(Ident::new("crate", Span::call_site())),
-            TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-            TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-            TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
-            TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-            TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-            TokenTree::Ident(first_alias),
-            TokenTree::Punct(Punct::new('!', Spacing::Joint)),
-            TokenTree::Group(Group::new(Delimiter::Brace, stream)),
-        ])
-    } else {
-        // No derive aliases used.
-        // Just pass all derives to the standard library's
-        TokenStream::from_iter(
-            [
-                TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                TokenTree::Group(Group::new(
-                    Delimiter::Bracket,
-                    TokenStream::from_iter([
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Ident(Ident::new("core", Span::call_site())),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Ident(Ident::new("prelude", Span::call_site())),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Ident(Ident::new("v1", Span::call_site())),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Ident(Ident::new("derive", Span::call_site())),
-                        TokenTree::Group(regular_derives.inside_of(Delimiter::Parenthesis)),
-                    ]),
-                )),
-            ]
-            .into_iter()
-            .chain(item),
-        )
     }
 }
 
