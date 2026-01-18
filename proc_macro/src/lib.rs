@@ -833,15 +833,11 @@ See the [crate-level](https://docs.rs/derive_aliases/latest/derive_aliases) docu
 #[proc_macro_attribute]
 #[cfg_attr(not(feature = "show"), doc(hidden))]
 pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut regular_derives = Tokens(TokenStream::new());
-    let mut aliases = Vec::new();
     let mut compile_errors = Vec::new();
-    extract_derives(
-        attr,
-        &mut regular_derives,
-        &mut aliases,
-        &mut compile_errors,
-    );
+    let ExtractedDerives {
+        regular_derives,
+        mut derive_aliases,
+    } = extract_derives(attr, &mut compile_errors);
     // all the tokens for "compile_error!(...)" invocations, to be inserted
     // alongside all other input
     let compile_errors = compile_errors
@@ -851,10 +847,31 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
     // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
     //
     // We treat the last alias specially
-    if let Some(first_alias) = aliases.pop() {
+    if let Some(first_alias) = derive_aliases.pop() {
+        // Every regular derive and its `cfg` value, which is just for now will be
+        // always `true`, so basically #[cfg_attr(true, DERIVE)]
+        //
+        // [{ true } ::core::marker::Copy] [{ true } ::core::clone::Clone]
+        let regular_derives = regular_derives.into_iter().map(|derive| {
+            TokenTree::Group(Group::new(
+                Delimiter::Bracket,
+                TokenStream::from_iter(
+                    [TokenTree::Group(Group::new(
+                        Delimiter::Brace,
+                        TokenStream::from_iter([TokenTree::Ident(Ident::new(
+                            "true",
+                            Span::call_site(),
+                        ))]),
+                    ))]
+                    .into_iter()
+                    .chain(derive.into_tokens()),
+                ),
+            ))
+        });
+
         let innermost_ts = TokenStream::from_iter([
             TokenTree::Punct(Punct::new('@', Spacing::Joint)),
-            TokenTree::Group(regular_derives.inside_of(Delimiter::Bracket)),
+            TokenTree::Group(Group::new(Delimiter::Bracket, regular_derives.collect())),
             TokenTree::Group(Group::new(Delimiter::Bracket, item)),
         ]);
 
@@ -863,19 +880,21 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         // @ [Debug,] [struct Foo;]
         // crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])
         // crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;]))
-        let inner = aliases.into_iter().fold(innermost_ts, |acc, current| {
-            TokenStream::from_iter([
-                TokenTree::Ident(Ident::new("crate", Span::call_site())),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Ident(current),
-                TokenTree::Punct(Punct::new(',', Spacing::Joint)),
-                TokenTree::Group(Group::new(Delimiter::Parenthesis, acc)),
-            ])
-        });
+        let inner = derive_aliases
+            .into_iter()
+            .fold(innermost_ts, |acc, current| {
+                TokenStream::from_iter([
+                    TokenTree::Ident(Ident::new("crate", Span::call_site())),
+                    TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                    TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                    TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
+                    TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                    TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                    TokenTree::Ident(current),
+                    TokenTree::Punct(Punct::new(',', Spacing::Joint)),
+                    TokenTree::Group(Group::new(Delimiter::Parenthesis, acc)),
+                ])
+            });
 
         // Wrap in a final invocation
         //
@@ -900,6 +919,14 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
             .chain(compile_errors),
         )
     } else {
+        // #[derive(::core::clone::Clone, ::core::marker::Copy,)]
+        //          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        let derive_macro_input = regular_derives.into_iter().flat_map(|derive| {
+            derive
+                .into_tokens()
+                .chain([TokenTree::Punct(Punct::new(',', Spacing::Joint))])
+        });
+
         // No derive aliases used.
         // Just pass all derives to the standard library's
         TokenStream::from_iter(
@@ -920,7 +947,10 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                         TokenTree::Punct(Punct::new(':', Spacing::Joint)),
                         TokenTree::Punct(Punct::new(':', Spacing::Joint)),
                         TokenTree::Ident(Ident::new("derive", Span::call_site())),
-                        TokenTree::Group(regular_derives.inside_of(Delimiter::Parenthesis)),
+                        TokenTree::Group(Group::new(
+                            Delimiter::Parenthesis,
+                            derive_macro_input.collect(),
+                        )),
                     ]),
                 )),
             ]
@@ -929,6 +959,33 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
             .chain(compile_errors),
         )
     }
+}
+
+/// The extracted derive data from a `derive` invocation that
+/// permits derive aliases
+///
+/// Example:
+///
+/// ```ignore
+/// #[derive(..Eq, Serialize, ..Clone, Deserialize)]
+/// ```
+struct ExtractedDerives {
+    /// This is just the raw TokenStream passed directly to `#[std::derive(..)]`
+    ///
+    /// For that Example, this is:
+    ///
+    /// ```ignore
+    /// [parse_quote!(Serialize), parse_quote!(Deserialize)]
+    /// ```
+    regular_derives: Vec<Path>,
+    /// A list of derive aliases, which we will expand at `crate::derive_alias::{alias}`
+    ///
+    /// For that Example, this is:
+    ///
+    /// ```ignore
+    /// [parse_quote!(Eq), parse_quote!(Clone)]
+    /// ```
+    derive_aliases: Vec<Ident>,
 }
 
 /// Extracts derives and derive aliases from a #[derive] attribute.
@@ -954,14 +1011,7 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Notably, each regular derive will always be followed by a comma,
 /// even if that comma wasn't in the original input
-fn extract_derives(
-    attr: TokenStream,
-    // This is just the raw TokenStream passed directly to `#[std::derive(..)]`
-    regular_derives: &mut Tokens,
-    // A list of derive aliases, which we will expand at `crate::derive_alias::{alias}`
-    aliases: &mut Vec<Ident>,
-    compile_errors: &mut Vec<CompileError>,
-) {
+fn extract_derives(attr: TokenStream, compile_errors: &mut Vec<CompileError>) -> ExtractedDerives {
     // Contains both regular derives and derive aliases
     //
     // ..Alias, Derive1, ..Alias2, std::Derive2
@@ -969,6 +1019,9 @@ fn extract_derives(
         stream: attr.into_iter().peekable(),
         span: Span::call_site(),
     };
+
+    let mut regular_derives = Vec::new();
+    let mut derive_aliases = Vec::new();
 
     while let Some(tt) = attr.peek_tt() {
         if matches!(tt, TokenTree::Punct(dot) if *dot == '.') {
@@ -984,7 +1037,7 @@ fn extract_derives(
                 break;
             };
 
-            aliases.push(alias);
+            derive_aliases.push(alias);
 
             match attr.peek_tt() {
                 // Comma after alias
@@ -1023,17 +1076,22 @@ fn extract_derives(
 
             match attr.tt() {
                 Some(TokenTree::Punct(punct)) if punct == ',' => {
-                    regular_derives.push(punct);
+                    // A comma in the derive input
                 }
                 Some(_) => {
                     compile_errors.push(attr.compile_error("expected `,` or end of input"));
                     continue;
                 }
                 None => {
-                    regular_derives.push(Punct::new(',', Spacing::Joint));
+                    // End of derive input
                 }
             }
         }
+    }
+
+    ExtractedDerives {
+        regular_derives,
+        derive_aliases,
     }
 }
 

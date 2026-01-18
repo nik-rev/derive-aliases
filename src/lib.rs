@@ -592,7 +592,7 @@ macro_rules! __internal_derive_aliases_new_alias {
 
         // <derive-paths>
         $(
-            [$($derives:tt)*]
+            [ { $($derives_cfg:tt)* } $($derives:tt)*]
         ,)*
     ) => {
         $crate::__internal_derive_aliases_new_alias! {
@@ -654,7 +654,7 @@ macro_rules! __internal_derive_aliases_new_alias {
                             // All the derives for THIS alias: `$_ Alias`
                             $(
                                 // <derive-path>
-                                [$($derives)*],
+                                [$derives_cfg $($derives)*],
                             )*
                         ]
                     }
@@ -677,6 +677,9 @@ macro_rules! __internal_derive_aliases_new_alias {
                         [
                             // This STARTS WITH the derive currently being processed
                             [
+                                // yes, we do NOT take into account the `cfg` at *all*
+                                // for the purposes of de-duplication
+                                $_ derives_cfg:tt
                                 // <definitely-dup-derive-path>
                                 $($derives)*
                             ],
@@ -731,7 +734,7 @@ macro_rules! __internal_derive_aliases_new_alias {
                         // earlier arms
                         //
                         // <derive-path>
-                        [ $_($_ first:tt)* ],
+                        [ $_first_cfg:tt $_($_ first:tt)* ],
 
                         $_(
                             // <dup-derive-path>
@@ -773,7 +776,10 @@ macro_rules! __internal_derive_aliases_new_alias {
                             // this one is 100% not a duplicate of any other ones
                             //
                             // <derive-path>
-                            [ $_($_ first)* ],
+                            [
+                                $_ first_cfg
+                                $_($_ first)*
+                            ],
                         ]
                     }
                 };
@@ -791,9 +797,13 @@ macro_rules! __internal_derive_aliases_new_alias {
                 // Copy! { ? [Debug,][struct Foo;] [] [[Ord], [PartialOrd], [PartialEq],] }
                 (?
                     // <regular-derives>
-                    [
-                        $_($_ regular_derives:tt)*
-                    ]
+                    [$_(
+                        // <regular-derive>
+                        [
+                            { $_($_ regular_derives_cfg:tt)* }
+                            $_($_ regular_derives:tt)*
+                        ]
+                    )*]
 
                     // For the first time, match against the item we will actually
                     // apply all of these derives to
@@ -812,29 +822,44 @@ macro_rules! __internal_derive_aliases_new_alias {
                     // <derive-paths>
                     [$_ (
                         // <derive-path>
-                        [ $_ deduplicated:path ],
+                        [
+                            { $_($_ deduplicated_cfg:tt)* }
+                            $_ deduplicated:path
+                        ],
                     )*]
                 ) => {
-                    #[::core::prelude::v1::derive(
-                        // All derives that did not come from an expansion
-                        //
-                        // <regular-derives>
-                        $_(
-                            $_ regular_derives
-                        )*
-                        // Derives that were de-duplicated for THIS alias
-                        //
-                        // <derive-paths>
-                        $_(
-                            $_ deduplicated,
-                        )*
-                        // Derives that come as a result of expansion of THIS alias
-                        $(
-                            $($derives)*,
-                        )*
-                    )]
+                    // All derives that did not come from an expansion
+                    //
+                    // <regular-derives>
+                    $_(
+                        #[cfg_attr(
+                            $_($_ regular_derives_cfg)*,
+                            ::core::prelude::v1::derive($_ regular_derives)
+                        )]
+                    )*
+
+                    // Derives that were de-duplicated for THIS alias
+                    //
+                    // <derive-paths>
+                    $_(
+                        #[cfg_attr(
+                            $_($_ regular_derives_cfg)*,
+                            ::core::prelude::v1::derive($_ deduplicated)
+                        )]
+                    )*
+
+                    // Derives that come as a result of expansion of THIS alias
+                    $(
+                        #[cfg_attr(
+                            $($derives_cfg)*,
+                            ::core::prelude::v1::derive($derives)
+                        )]
+                    )*
+
                     $_ ($_ item) *
                 };
+
+                ///////////////////////////////////////////////////////////////
 
                 // Remove each derive from the set
                 $(
@@ -843,18 +868,26 @@ macro_rules! __internal_derive_aliases_new_alias {
                         $regular_derives:tt
                         // <item>
                         $item:tt
+
+                        // <dup-derive-paths>
                         [
-                            // the first path
-                            [ $($derives)* ],
+                            // <definitely-dup-derive-path>
+                            [
+                                // yes, for the purposes of de-duplication
+                                // we don't care about `cfg` at all
+                                $_ derives_cfg:tt
+                                $($derives)*
+                            ],
                             // rest of the paths
                             $_ (
-                                // a single path
+                                // <dup-derive-path>
                                 [ $_ ($_ rest:tt)* ],
                             )*
                         ]
-                        // list of paths
+
+                        // <derive-paths>
                         [$_(
-                            // a single path
+                            // <derive-path>
                             [ $_ ($_ deduplicated:tt)* ],
                         )*]
                     ) => {
@@ -864,14 +897,17 @@ macro_rules! __internal_derive_aliases_new_alias {
                             // <item>
                             $_ item
 
-                            //
+                            // <dup-derive-paths>
                             [$_ (
-                                [$_($_ rest)*],
+                                [
+                                    // <dup-derive-path>
+                                    $_($_ rest)*
+                                ],
                             )*]
 
-                            // list of paths we knew were not duplicated
+                            // <derive-paths>
                             [$_ (
-                                // a single path
+                                // <derive-path>
                                 [$_($_ deduplicated)*],
                             )*]
                         }
@@ -883,19 +919,24 @@ macro_rules! __internal_derive_aliases_new_alias {
                     $_ regular_derives:tt
                     // <item>
                     $_ item:tt
+
+                    // <dup-derive-paths>
                     [
-                        // the first path
-                        [ $_($_ first:tt)* ],
-                        // rest of the paths
+                        // <derive-path>
+                        [
+                            $_ first_cfg:tt
+                            $_($_ first:tt)*
+                        ],
                         $_(
-                            // a single path
+                            // <derive-path>
                             [ $_ ($_ rest:tt)* ],
                         )*
                     ]
-                    // list of paths
+
+                    // <derive-paths>
                     [
                         $_ (
-                            // a single path
+                            // <derive-path>
                             [ $_ ($_ deduplicated:tt)* ],
                         )*
                     ]
@@ -905,24 +946,25 @@ macro_rules! __internal_derive_aliases_new_alias {
                         $_ regular_derives
                         // <item>
                         $_ item
-                        // a list of paths to process
+
+                        // <dup-derive-paths>
                         [$_(
-                            // a single path
+                            // <dup-derive-path>
                             [$_($_ rest)*],
                         )*]
 
-                        // a list of paths we know is not duplicated
+                        // <derive-paths>
                         [
-                            // a list of paths we already knew were not duplicated
                             $_(
-                                // a single path
+                                // <derive-path>
                                 [$_($_ deduplicated)*],
                             )*
 
-                            // the path we learned that is not duplicated right now
-                            //
-                            // push the path we know cannot be duplicated to the end
-                            [$_($_ first)*],
+                            // <derive-path>
+                            [
+                                $_ first_cfg
+                                $_($_ first)*
+                            ],
                         ]
                     }
                 };
@@ -933,9 +975,9 @@ macro_rules! __internal_derive_aliases_new_alias {
                     $_ regular_derives:tt
                     // <item>
                     $_ item:tt
-                    // list of paths
+                    // <dup-derive-paths>
                     [$_ (
-                        // a single path
+                        // <dup-derive-paths>
                         [ $_ ($_ derives:tt)* ],
                     )*]
                 ) => {
@@ -946,13 +988,17 @@ macro_rules! __internal_derive_aliases_new_alias {
                         // <item>
                         $_ item
 
+                        // <dup-derive-paths>
                         [$_(
+                            // <dup-derive-paths>
                             [$_($_ derives)*]
                         ,)*]
 
                         // this will be populated with Derives that are NOT derives that
                         // could possibly come from this alias expansion,
                         // because we don't want to accidentally get duplicates
+                        //
+                        // <derive-paths>
                         []
                     }
                 };
@@ -1021,7 +1067,10 @@ macro_rules! __internal_derive_aliases_new_alias {
                         $_ ( [ $_($_ accumulated)* ], ) *
 
                         // add our own aliases to top of the stack
-                        $( [$($derives)*], )*
+                        $( [
+                            $derives_cfg
+                            $($derives)*
+                        ],)*
                     }
                 };
 
@@ -1040,7 +1089,10 @@ macro_rules! __internal_derive_aliases_new_alias {
                         $_ ( [ $_($_ accumulated)* ], ) *
 
                         // add our own aliases to top of the stack
-                        $( [$($derives)*], )*
+                        $( [
+                            $derives_cfg
+                            $($derives)*
+                        ], )*
                     }
                 };
             }
