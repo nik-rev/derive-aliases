@@ -5,27 +5,6 @@ use std::{borrow::Cow, iter::Peekable};
 
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
-/// High-level wrapper around `TokenStream` with helper methods
-pub struct Tokens(pub TokenStream);
-
-impl Display for Tokens {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl Tokens {
-    /// Insert a token at the end
-    pub fn push(&mut self, token: impl IntoTokens) {
-        self.extend(token.into_tokens());
-    }
-
-    /// Wrap in `delimiter`, e.g. `tokens` -> `[tokens]`
-    pub fn inside_of(self, delimiter: Delimiter) -> Group {
-        Group::new(delimiter, self.0)
-    }
-}
-
 /// Types that can be turned into a bunch of `TokenTree`s
 pub trait IntoTokens {
     /// Convert this type into a bunch of `TokenTree`s
@@ -59,13 +38,6 @@ impl IntoTokens for Ident {
 impl IntoTokens for TokenTree {
     fn into_tokens(self) -> impl Iterator<Item = TokenTree> {
         iter::once(self)
-    }
-}
-
-impl<K: IntoTokens> Extend<K> for Tokens {
-    fn extend<T: IntoIterator<Item = K>>(&mut self, iter: T) {
-        self.0
-            .extend(iter.into_iter().flat_map(IntoTokens::into_tokens));
     }
 }
 
