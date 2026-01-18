@@ -343,11 +343,11 @@ pub use derive_aliases_proc_macro::derive;
 ///   pub(crate) use Ord;
 ///   ```
 ///
-///   Because the `define!` macro itself referenes alias `..Eq` which it itself defines, we are able to "inline" all the aliases
+///   Because the `define!` macro itself references alias `..Eq` which it itself defines, we are able to "inline" all the aliases
 ///   to make it more performant. However, we also allow to refer to aliases that were **not** defined inside of the same `define!` call.
 ///   I'll explain how this is possible later.
 ///
-///   **Back to `[$($path:tt)*]`**. We essentally use that instead of `$path:path` because you cannot compare 2 `:path` meta-variables. it's
+///   **Back to `[$($path:tt)*]`**. We essentially use that instead of `$path:path` because you cannot compare 2 `:path` meta-variables. it's
 ///   as simple as that. We **must** compare them, but we can't. But we CAN compare 1 `[$($path:tt)*]` with another `[$($path:tt)*]`
 ///
 ///   **Why we need to compare**: Our aliases have the important property that they act as *sets*. 2 aliases that expand to a bunch of derives,
@@ -413,7 +413,7 @@ pub use derive_aliases_proc_macro::derive;
 ///
 /// # Example with derives that conflict
 ///
-/// As you can see this expanion is **very** simple because it just directly expands to the `std::derive`.
+/// As you can see this expansion is **very** simple because it just directly expands to the `std::derive`.
 /// However, it gets a lot more interesting when there are multiple aliases involved, and these aliases may contain
 /// derives that are overlapping and should be merged.
 ///
