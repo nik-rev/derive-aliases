@@ -593,6 +593,7 @@ macro_rules! __internal_derive_aliases_new_alias {
 
         // <derive-paths>
         $(
+            // <derive-path>
             [ { $($derives_cfg:tt)* } $($derives:tt)*]
         ,)*
     ) => {
@@ -655,7 +656,7 @@ macro_rules! __internal_derive_aliases_new_alias {
                             // All the derives for THIS alias: `$_ Alias`
                             $(
                                 // <derive-path>
-                                [$derives_cfg $($derives)*],
+                                [ { $($derives_cfg)* } $($derives)*],
                             )*
                         ]
                     }
@@ -853,7 +854,7 @@ macro_rules! __internal_derive_aliases_new_alias {
                     $(
                         #[cfg_attr(
                             $($derives_cfg)*,
-                            ::core::prelude::v1::derive($derives)
+                            ::core::prelude::v1::derive($($derives)*)
                         )]
                     )*
 
@@ -1069,7 +1070,7 @@ macro_rules! __internal_derive_aliases_new_alias {
 
                         // add our own aliases to top of the stack
                         $( [
-                            $derives_cfg
+                            { $($derives_cfg)* }
                             $($derives)*
                         ],)*
                     }
@@ -1091,7 +1092,7 @@ macro_rules! __internal_derive_aliases_new_alias {
 
                         // add our own aliases to top of the stack
                         $( [
-                            $derives_cfg
+                            { $($derives_cfg)* }
                             $($derives)*
                         ], )*
                     }
