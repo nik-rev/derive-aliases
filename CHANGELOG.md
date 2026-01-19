@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-[Unreleased]: https://github.com/nik-rev/derive-aliases/compare/v0.4.8...HEAD
+[Unreleased]: https://github.com/nik-rev/derive-aliases/compare/v0.4.9...HEAD
 
-## [v0.4.8] - 2026-01-17
+## [0.4.9] - 2026-01-17 [YANKED]
+
+[v0.4.9]: https://github.com/nik-rev/derive-aliases/compare/v0.4.8...v0.4.9
+
+## [v0.4.8] - 2026-01-17 [YANKED]
 
 [v0.4.8]: https://github.com/nik-rev/derive-aliases/compare/v0.4.7...v0.4.8
 
