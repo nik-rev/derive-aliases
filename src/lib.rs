@@ -204,6 +204,7 @@
 //! ```
 //!
 //! For details, hover over `#![export_derive_aliases]` in your editor
+#![no_std]
 #![allow(clippy::crate_in_macro_def)]
 
 #[cfg_attr(
