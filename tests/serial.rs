@@ -13,6 +13,10 @@ mod derive_alias {
 
 #[derive_aliases::derive(..Serialize)]
 #[derive_aliases::derive(..Clone)]
+/*^
+$(::serde::Serialize,)
+$(::core::clone::Clone,)
+*/
 struct A {
     #[serde(skip_serializing_if = "Option::is_none")]
     field: Option<()>,
@@ -20,6 +24,10 @@ struct A {
 
 #[derive_aliases::derive(..Clone)]
 #[derive_aliases::derive(..Serialize)]
+/*^
+$(::core::clone::Clone,)
+$(::serde::Serialize,)
+*/
 struct B {
     #[serde(skip_serializing_if = "Option::is_none")]
     field: Option<()>,
@@ -28,6 +36,10 @@ struct B {
 #[serde_with::skip_serializing_none]
 #[derive_aliases::derive(..Clone)]
 #[derive_aliases::derive(..Serialize)]
+/*^
+$(::core::clone::Clone,)
+$(::serde::Serialize,)
+*/
 struct C {
     field: Option<()>,
 }
