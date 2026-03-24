@@ -14,7 +14,7 @@ use monostate::MustBe;
 use serde_cursor::Cursor;
 
 /// Tests with annotation comments
-const TESTS: &[&str] = &["serial"];
+const TESTS: &[&str] = &["helper_container"];
 
 /// A temporary file that exists only for a brief moment in time
 ///
@@ -127,6 +127,8 @@ fn annotation() -> evil::Result {
                     format!("#[{line}]")
                         .replace("$", "::core::prelude::v1::derive")
                         .replace("@", "cfg_attr")
+                        .split_whitespace()
+                        .join("")
                 })
                 .join("\n");
 
@@ -152,7 +154,31 @@ fn annotation() -> evil::Result {
                 .iter()
                 .rev()
                 .find(|message| message.starts_with("to `#"))?
-                .strip_prefix("to `")?;
+                .strip_prefix("to `")?
+                // Remove whitespace, because it doesn't matter, and fluctutes a lot
+                .split_whitespace()
+                .join("");
+
+            // We want each attribute to be on its own line
+            let mut actual_expansion_with_newlines = String::new();
+
+            let mut tmp = actual_expansion.chars().peekable();
+            let mut started = false;
+
+            while let Some(ch) = tmp.next() {
+                if ch == '#' && tmp.peek().is_some_and(|it| it == &'[') {
+                    if started {
+                        actual_expansion_with_newlines.push_str("\n#");
+                    } else {
+                        actual_expansion_with_newlines.push('#');
+                    }
+                } else {
+                    actual_expansion_with_newlines.push(ch);
+                }
+                started = true;
+            }
+
+            let actual_expansion = actual_expansion_with_newlines;
 
             // where all the attributes end
             //
