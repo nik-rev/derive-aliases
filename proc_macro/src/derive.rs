@@ -1,4 +1,5 @@
 use crate::cfg_true;
+use crate::encode_cfg_predicate;
 use crate::tokens;
 use crate::tokens::IntoTokens;
 use crate::CompileError;
@@ -17,8 +18,7 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         derive_aliases,
     } = extract_derives(attr, &mut compile_errors);
 
-    let mut regular_derives: Vec<(TokenStream, Vec<Path>)> =
-        vec![(TokenStream::from_iter([cfg_true()]), regular_derives)];
+    let mut regular_derives: Vec<(TokenStream, Vec<Path>)> = vec![(cfg_true(), regular_derives)];
 
     let mut derive_aliases: Vec<(TokenStream, Ident)> = derive_aliases
         .into_iter()
@@ -51,38 +51,58 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into_iter()
         .flat_map(|compile_error| compile_error.into_tokens());
 
-    // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
+    // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [[{ cfg } Debug,] [{ cfg } ::core::clone::Clone]] [struct Foo;])) [] }
     //
     // We treat the last alias specially
     if let Some((first_alias_cfg, first_alias)) = derive_aliases.pop() {
         // Every regular derive and its `cfg` value, which is just for now will be
         // always `true`, so basically #[cfg_attr(true, DERIVE)]
         //
-        // [{ true } ::core::marker::Copy] [{ true } ::core::clone::Clone]
+        // [{ cfg } ::core::marker::Copy] [{ cfg } ::core::clone::Clone]
+        // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        //                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
         let regular_derives = regular_derives.into_iter().flat_map(|(cfg, derives)| {
             derives.into_iter().map(move |derive| {
+                // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [[{ cfg } Debug,] [{ cfg } ::core::clone::Clone]] [struct Foo;])) [] }
+                //                                                                                    ^^^^^^^^^^^^^^^^
+                //                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                 TokenTree::Group(Group::new(
                     Delimiter::Bracket,
-                    TokenStream::from_iter(cfg.clone().into_iter().chain(derive.into_tokens())),
+                    TokenStream::from_iter(
+                        encode_cfg_predicate(cfg.clone())
+                            .into_iter()
+                            .chain(derive.into_tokens()),
+                    ),
                 ))
             })
         });
 
         let innermost_ts = TokenStream::from_iter([
+            // The '@' is a symbol that tells the macro that there are derive aliases. See docs on `::derive_aliases::__internal_derive_aliases_new_alias!`
+            // for more info.
+            //
+            // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [[{ cfg } Debug,] [{ cfg } Clone]] [struct Foo;])) [] }
+            //                                                                                 ^
             TokenTree::Punct(Punct::new('@', Spacing::Joint)),
+            // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [[{ cfg } Debug,] [{ cfg } Clone]] [struct Foo;])) [] }
+            //                                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
             TokenTree::Group(Group::new(Delimiter::Bracket, regular_derives.collect())),
+            // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [[{ cfg } Debug,] [{ cfg } Clone]] [struct Foo;])) [] }
+            //                                                                                                             Clone  ^^^^^^^^^^^^^
             TokenTree::Group(Group::new(Delimiter::Bracket, item_tokens.collect())),
         ]);
 
         // Build up nesting
         //
-        // @ [Debug,] [struct Foo;]
-        // crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])
-        // crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;]))
+        // @ [[{ cfg } Debug,] [{ cfg } Clone]] [struct Foo;]
+        // crate::derive_alias::Copy,(@ [[{ cfg } Debug,] [{ cfg } Clone]] [struct Foo;])
+        // crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [[{ cfg } Debug,] [{ cfg } Clone]] [struct Foo;]))
         let inner =
             derive_aliases
                 .into_iter()
                 .fold(innermost_ts, |acc, (current_cfg, current_alias)| {
+                    // TODO: We want to GATE this alias behind `current_cfg`
+
                     TokenStream::from_iter([
                         TokenTree::Ident(Ident::new("crate", Span::call_site())),
                         TokenTree::Punct(Punct::new(':', Spacing::Joint)),
@@ -98,12 +118,15 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Wrap in a final invocation
         //
-        // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
+        // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [[{ cfg } Debug,] [{ cfg } Clone]] [struct Foo;])) [] }
+        //                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
         let stream = TokenStream::from_iter(inner.into_iter().chain([TokenTree::Group(
             Group::new(Delimiter::Bracket, TokenStream::new()),
         )]));
 
-        let a = TokenStream::from_iter(
+        // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [[{ cfg } Debug,] [{ cfg } Clone]] [struct Foo;])) [] }
+        // ^^^^^^^^^^^^^^^^^^^^^^^^^
+        TokenStream::from_iter(
             [
                 TokenTree::Ident(Ident::new("crate", Span::call_site())),
                 TokenTree::Punct(Punct::new(':', Spacing::Joint)),
@@ -117,9 +140,7 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
             ]
             .into_iter()
             .chain(compile_errors),
-        );
-
-        a
+        )
     } else {
         // No derive aliases used.
         // Just pass all derives to the standard library's

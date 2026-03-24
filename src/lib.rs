@@ -228,10 +228,14 @@ pub use derive_aliases_proc_macro::derive;
 ///
 /// # Special tokens
 ///
+/// When input to the generated macro starts with:
+///
 /// - '%': This macro is being called as an extern alias.
 ///
 ///   What this means is that an alias from another invocation of `derive_aliases::define!` referred
 ///   to this alias, so what we do is INJECT this alias's derives into the "extern alias"'s derive list.
+///
+/// - '@': There are derive aliases to expand
 ///
 /// # Example
 ///
