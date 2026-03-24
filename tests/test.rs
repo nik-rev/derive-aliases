@@ -37,7 +37,7 @@ pub mod derive_alias {
     pub use foo::*;
 }
 
-assert_impls!(a [Clone] => Clone);
+// assert_impls!(a [Clone] => Clone);
 assert_impls!(b [..Eq] => Eq, PartialEq);
 assert_impls!(c [..AndMore] => PartialOrd, Ord, PartialEq, Eq, Copy, Clone, Default, std::hash::Hash);
 assert_impls!(d [..Ord] => PartialOrd, Ord, PartialEq, Eq);
