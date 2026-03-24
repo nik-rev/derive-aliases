@@ -23,12 +23,12 @@ struct A {
     field: Option<()>,
 }
 
-#[derive(serde::Serialize)]
-#[derive_aliases::derive(..Clone)]
-struct A2 {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    field: Option<()>,
-}
+// #[derive(serde::Serialize)]
+// #[derive_aliases::derive(..Clone)]
+// struct A2 {
+//     #[serde(skip_serializing_if = "Option::is_none")]
+//     field: Option<()>,
+// }
 
 // Swap the order
 

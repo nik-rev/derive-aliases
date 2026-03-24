@@ -12,8 +12,5 @@ readme = "../README.md"
 [lib]
 proc-macro = true
 
-[features]
-show = []
-
 [dev-dependencies]
 derive_aliases = { path = ".." }
