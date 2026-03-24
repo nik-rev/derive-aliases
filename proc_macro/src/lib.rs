@@ -18,7 +18,10 @@ mod tokens;
 fn cfg_true() -> TokenTree {
     TokenTree::Group(Group::new(
         Delimiter::Brace,
-        TokenStream::from_iter([TokenTree::Ident(Ident::new("true", Span::call_site()))]),
+        TokenStream::from_iter([
+            TokenTree::Ident(Ident::new("all", Span::call_site())),
+            TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
+        ]),
     ))
 }
 
@@ -77,6 +80,11 @@ pub fn define(tts: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
     derive::derive(attr, item)
+}
+
+#[proc_macro_attribute]
+pub fn foo(attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
 }
 
 /// The macro **created** by `new_alias!` handles de-duplication just fine using a TT muncher. But the derives passed to `new_alias!` **must not**

@@ -8,6 +8,8 @@ use tokens::Path;
 use tokens::TokensIter;
 
 pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
+    // panic!("{}", item);
+
     let mut compile_errors = Vec::new();
 
     let ExtractedDerives {
@@ -31,53 +33,232 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
     // It will be our job to put those attributes back when generating the code, before this stream
     let mut item_tokens = item.into_iter().peekable();
 
-    // Attributes that we don't process, instead, they are kept as-is
-    let mut other_attrs = TokenStream::new();
+    // Attributes that we don't process, instead, they are kept as-is,
+    // and we must re-emit them
+    let attributes_to_re_emit = fun_name(
+        &mut compile_errors,
+        &mut regular_derives,
+        &mut derive_aliases,
+        &mut item_tokens,
+    );
 
-    // Loop through every attribute on the item
+    // Tokens of the item, with all non-derive attributes inserted back
+    let item_tokens = attributes_to_re_emit.into_iter().chain(item_tokens);
+
+    // all the tokens for "compile_error!(...)" invocations, to be inserted
+    // alongside all other input
+    let compile_errors = compile_errors
+        .into_iter()
+        .flat_map(|compile_error| compile_error.into_tokens());
+
+    // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
     //
-    // #[attr1]
-    // #[attr2]
-    // #[attr3]
-    // #[attr4]
-    // struct Item;
-    //
-    // Attributes that are #[derive(..)]-like attributes or #[cfg_attr(predicate, derive(..))]-like will
-    // have their contents parsed and the derive aliases / derives will all be handled by a single proc macro call
-    //
-    // Yes, this means that multiple #[derive_aliases::derive] calls will "merge" into a single one:
-    //
-    // #[derive(..Eq, Clone)]
-    // #[cfg_attr(feature = "serde", deny_unknown_fields)]
-    // #[derive(..Ord, Copy)]
-    // #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-    // struct Item;
-    //
-    // All of those attributes will actually act as if the user wrote this instead:
-    //
-    // #[derive(..Eq, Clone, ..Ord, Copy)]
-    // #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-    // #[cfg_attr(feature = "serde", deny_unknown_fields)]
-    // struct Item;
-    //
-    // Notably:
-    //
-    // - What the user wrote should fail compilation. The `serde` helper attribute is only available
-    //   *after* the derive macro, but the user wrote them in reverse order. Because of our macro, it will compile
-    // - The order in which the aliases/derives are actually evaluated is completely unspecified
-    //
-    // Why do this?
-    //
-    // Because we're mimicking what the `core::derive` macro actually does, we need to consider helper attributes.
-    // Derive helper attributes work via name resolution. But in a macro context, we don't have access to the name resolution,
-    // so we must try best-effort.
-    //
-    // Earlier, we would have each `derive_aliases::derive` attribute handle its own logic and wrapping.
-    // This didn't work because there were issues with helper attribute namespace being invalidated after the first
-    // attribute was expanded, so instead all work is done by a single attribute.
-    //
-    // This does mean that the user can't actually use a different name for the `derive` attribute,
-    // only a hard-coded set of paths is read from.
+    // We treat the last alias specially
+    if let Some((first_alias_cfg, first_alias)) = derive_aliases.pop() {
+        // Every regular derive and its `cfg` value, which is just for now will be
+        // always `true`, so basically #[cfg_attr(true, DERIVE)]
+        //
+        // [{ true } ::core::marker::Copy] [{ true } ::core::clone::Clone]
+        let regular_derives = regular_derives.into_iter().flat_map(|(cfg, derives)| {
+            derives.into_iter().map(move |derive| {
+                TokenTree::Group(Group::new(
+                    Delimiter::Bracket,
+                    TokenStream::from_iter(cfg.clone().into_iter().chain(derive.into_tokens())),
+                ))
+            })
+        });
+
+        let innermost_ts = TokenStream::from_iter([
+            TokenTree::Punct(Punct::new('@', Spacing::Joint)),
+            TokenTree::Group(Group::new(Delimiter::Bracket, regular_derives.collect())),
+            TokenTree::Group(Group::new(Delimiter::Bracket, item_tokens.collect())),
+        ]);
+
+        // Build up nesting
+        //
+        // @ [Debug,] [struct Foo;]
+        // crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])
+        // crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;]))
+        let inner =
+            derive_aliases
+                .into_iter()
+                .fold(innermost_ts, |acc, (current_cfg, current_alias)| {
+                    TokenStream::from_iter([
+                        TokenTree::Ident(Ident::new("crate", Span::call_site())),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                        TokenTree::Ident(current_alias),
+                        TokenTree::Punct(Punct::new(',', Spacing::Joint)),
+                        TokenTree::Group(Group::new(Delimiter::Parenthesis, acc)),
+                    ])
+                });
+
+        // Wrap in a final invocation
+        //
+        // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
+        let stream = TokenStream::from_iter(inner.into_iter().chain([TokenTree::Group(
+            Group::new(Delimiter::Bracket, TokenStream::new()),
+        )]));
+
+        let a = TokenStream::from_iter(
+            [
+                TokenTree::Ident(Ident::new("crate", Span::call_site())),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                TokenTree::Ident(first_alias),
+                TokenTree::Punct(Punct::new('!', Spacing::Joint)),
+                TokenTree::Group(Group::new(Delimiter::Brace, stream)),
+            ]
+            .into_iter()
+            .chain(compile_errors),
+        );
+
+        a
+    } else {
+        // No derive aliases used.
+        // Just pass all derives to the standard library's
+
+        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+        let derive_macro_input = regular_derives.into_iter().flat_map(|(cfg, derives)| {
+            derives.into_iter().flat_map(move |derive| {
+                [
+                    // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                    // ^
+                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
+                    // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                    //  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    TokenTree::Group(Group::new(
+                        Delimiter::Bracket,
+                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                        //  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        TokenStream::from_iter([
+                            // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                            //   ^^^^^^^^
+                            TokenTree::Ident(Ident::new("cfg_attr", Span::call_site())),
+                            // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                            //           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                            TokenTree::Group(Group::new(
+                                Delimiter::Parenthesis,
+                                TokenStream::from_iter(
+                                    // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                    //            ^^^^
+                                    cfg.clone().into_iter().chain([
+                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                        //                ^
+                                        TokenTree::Punct(Punct::new(',', Spacing::Alone)),
+                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                        //                  ^^
+                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                        //                    ^^^^
+                                        TokenTree::Ident(Ident::new("core", Span::call_site())),
+                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                        //                        ^^
+                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                        //                          ^^^^^^^
+                                        TokenTree::Ident(Ident::new("prelude", Span::call_site())),
+                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                        //                                 ^^
+                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                        //                                   ^^
+                                        TokenTree::Ident(Ident::new("v1", Span::call_site())),
+                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                        //                                     ^^
+                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                        //                                       ^^^^^^
+                                        TokenTree::Ident(Ident::new("derive", Span::call_site())),
+                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                        //                                             ^^^^^^^
+                                        TokenTree::Group(Group::new(
+                                            Delimiter::Parenthesis,
+                                            // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
+                                            //                                              ^^^^^
+                                            derive.into_tokens().collect(),
+                                        )),
+                                    ]),
+                                ),
+                            )),
+                        ]),
+                    )),
+                ]
+            })
+        });
+
+        TokenStream::from_iter(derive_macro_input.chain(item_tokens).chain(compile_errors))
+    }
+}
+
+/// Loop through every attribute on the item
+///
+/// ```ignore
+/// #[attr1]
+/// #[attr2]
+/// #[attr3]
+/// #[attr4]
+/// struct Item;
+/// ```
+///
+/// Attributes that are `#[derive(..)]`-like attributes or `#[cfg_attr(predicate, derive(..))]`-like will
+/// have their contents parsed and the derive aliases / derives will all be handled by a single proc macro call
+///
+/// Yes, this means that multiple `#[derive_aliases::derive]` calls will "merge" into a single one:
+///
+/// ```ignore
+/// #[derive(..Eq, Clone)]
+/// #[cfg_attr(feature = "serde", deny_unknown_fields)]
+/// #[derive(..Ord, Copy)]
+/// #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+/// struct Item;
+/// ```
+///
+/// All of those attributes will actually act as if the user wrote this instead:
+///
+/// ```ignore
+/// #[derive(..Eq, Clone, ..Ord, Copy)]
+/// #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+/// #[cfg_attr(feature = "serde", deny_unknown_fields)]
+/// struct Item;
+/// ```
+///
+/// Notably:
+///
+/// - What the user wrote should fail compilation. The `serde` helper attribute is only available
+///   *after* the derive macro, but the user wrote them in reverse order. Because of our macro, it will compile
+/// - The order in which the aliases/derives are actually evaluated is completely unspecified
+///
+/// Why do this?
+///
+/// Because we're mimicking what the `core::derive` macro actually does, we need to consider helper attributes.
+/// Derive helper attributes work via name resolution. But in a macro context, we don't have access to the name resolution,
+/// so we must try best-effort.
+///
+/// Earlier, we would have each `derive_aliases::derive` attribute handle its own logic and wrapping.
+/// This didn't work because there were issues with helper attribute namespace being invalidated after the first
+/// attribute was expanded, so instead all work is done by a single attribute.
+///
+/// This does mean that the user can't actually use a different name for the `derive` attribute,
+/// only a hard-coded set of paths is read from, namely `derive`, `derive_aliases::derive`,
+/// and `derive_aliases::derive`
+fn fun_name(
+    compile_errors: &mut Vec<CompileError>,
+    regular_derives: &mut Vec<(TokenStream, Vec<Path>)>,
+    derive_aliases: &mut Vec<(TokenStream, Ident)>,
+    item_tokens: &mut std::iter::Peekable<proc_macro::token_stream::IntoIter>,
+) -> TokenStream {
+    let mut other_attrs = TokenStream::new();
 
     loop {
         match item_tokens
@@ -161,14 +342,15 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     // No error on purpose.
                                     continue;
                                 };
-                                let derives = extract_derives(derive_stream, &mut compile_errors);
+                                let derives = extract_derives(derive_stream, compile_errors);
                                 regular_derives
                                     .push((cfg_predicate.clone(), derives.regular_derives));
                                 for alias in derives.derive_aliases {
                                     derive_aliases.push((cfg_predicate.clone(), alias));
                                 }
                             }
-                            // The attribute inside of #[cfg_attr] is different., e.g. #[cfg_attr(predicate, doc(hidden))]
+                            // The attribute inside of #[cfg_attr] is NOT a derive macro., e.g. #[cfg_attr(predicate, doc(hidden))]
+                            // or literally any other attribute
                             _ => {
                                 // re-construct the original attribute
                                 //
@@ -195,32 +377,48 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 let attr_inner = TokenStream::from_iter(
                                     attr_path.into_tokens().chain(cfg_attr_inner),
                                 );
+
                                 // #[cfg_attr(predicate, doc(hidden))]
                                 //  ^                                ^
                                 let mut group = Group::new(Delimiter::Bracket, attr_inner);
                                 group.set_span(attr_brackets.span());
 
                                 // Add back the entire attribute
+                                //
+                                // #[cfg_attr(predicate, doc(hidden))]
                                 other_attrs.extend([attr_hash, TokenTree::Group(group)]);
                                 continue;
                             }
                         }
                     }
-                    // A #[derive(..)] attribute
+                    // A top-level `derive` attribute
                     is_derive!() => {
                         let Some(derive_stream) = attr_stream.group(Delimiter::Parenthesis) else {
                             // No error on purpose.
                             continue;
                         };
-                        let derives = extract_derives(derive_stream, &mut compile_errors);
 
+                        // Extract derives from this derive macro. It could also be aliases, too.
+                        //
+                        // #[derive(Clone, Copy)]
+                        //          ^^^^^^^^^^^
+                        let derives = extract_derives(derive_stream, compile_errors);
+
+                        // this:
+                        //
+                        // #[derive(Clone, Copy)]
+                        //
+                        // is equivalent to this:
+                        //
+                        // #[cfg_attr(true, derive(Clone, Copy))]
                         let cfg_predicate = TokenStream::from_iter([cfg_true()]);
                         regular_derives.push((cfg_predicate.clone(), derives.regular_derives));
                         for alias in derives.derive_aliases {
                             derive_aliases.push((cfg_predicate.clone(), alias));
                         }
                     }
-                    // This is not a #[derive(..)], nor is it a #[cfg_attr(predicate, derive(..))]
+                    // This is not a #[derive(..)], nor is it a #[cfg_attr(predicate, derive(..))].
+                    // It is any other attribute, e.g. `#[doc]`
                     //
                     // Restore the original attribute that the user wrote
                     _ => {
@@ -233,12 +431,15 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                         );
                         group.set_span(attr_brackets.span());
 
+                        // Add back the entire attribute
+                        //
+                        // #[doc = "whatever"]
                         other_attrs.extend([attr_hash, TokenTree::Group(group)]);
                         continue;
                     }
                 }
             }
-            // The item has been reached
+            // The item has been reached, all attributes were processed
             //
             // #[attrs]
             // struct Item;
@@ -247,158 +448,7 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // all the tokens for "compile_error!(...)" invocations, to be inserted
-    // alongside all other input
-    let compile_errors = compile_errors
-        .into_iter()
-        .flat_map(|compile_error| compile_error.into_tokens());
-
-    // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
-    //
-    // We treat the last alias specially
-    if let Some((first_alias_cfg, first_alias)) = derive_aliases.pop() {
-        // Every regular derive and its `cfg` value, which is just for now will be
-        // always `true`, so basically #[cfg_attr(true, DERIVE)]
-        //
-        // [{ true } ::core::marker::Copy] [{ true } ::core::clone::Clone]
-        let regular_derives = regular_derives.into_iter().flat_map(|(cfg, derives)| {
-            derives.into_iter().map(move |derive| {
-                TokenTree::Group(Group::new(
-                    Delimiter::Bracket,
-                    TokenStream::from_iter(cfg.clone().into_iter().chain(derive.into_tokens())),
-                ))
-            })
-        });
-
-        let innermost_ts = TokenStream::from_iter([
-            TokenTree::Punct(Punct::new('@', Spacing::Joint)),
-            TokenTree::Group(Group::new(Delimiter::Bracket, regular_derives.collect())),
-            TokenTree::Group(Group::new(Delimiter::Bracket, item_tokens.collect())),
-        ]);
-
-        // Build up nesting
-        //
-        // @ [Debug,] [struct Foo;]
-        // crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])
-        // crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;]))
-        let inner =
-            derive_aliases
-                .into_iter()
-                .fold(innermost_ts, |acc, (current_cfg, current_alias)| {
-                    TokenStream::from_iter([
-                        TokenTree::Ident(Ident::new("crate", Span::call_site())),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                        TokenTree::Ident(current_alias),
-                        TokenTree::Punct(Punct::new(',', Spacing::Joint)),
-                        TokenTree::Group(Group::new(Delimiter::Parenthesis, acc)),
-                    ])
-                });
-
-        // Wrap in a final invocation
-        //
-        // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [Debug,] [struct Foo;])) [] }
-        let stream = TokenStream::from_iter(inner.into_iter().chain([TokenTree::Group(
-            Group::new(Delimiter::Bracket, TokenStream::new()),
-        )]));
-
-        TokenStream::from_iter(
-            [
-                TokenTree::Ident(Ident::new("crate", Span::call_site())),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Ident(Ident::new("derive_alias", Span::call_site())),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                TokenTree::Ident(first_alias),
-                TokenTree::Punct(Punct::new('!', Spacing::Joint)),
-                TokenTree::Group(Group::new(Delimiter::Brace, stream)),
-            ]
-            .into_iter()
-            .chain(compile_errors),
-        )
-    } else {
-        // No derive aliases used.
-        // Just pass all derives to the standard library's
-
-        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-        let derive_macro_input = regular_derives.into_iter().flat_map(|(cfg, derives)| {
-            derives.into_iter().flat_map(move |derive| {
-                [
-                    // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                    // ^
-                    TokenTree::Punct(Punct::new('#', Spacing::Joint)),
-                    // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                    //  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                    TokenTree::Group(Group::new(
-                        Delimiter::Bracket,
-                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                        //  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                        TokenStream::from_iter([
-                            // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                            //   ^^^^^^^^
-                            TokenTree::Ident(Ident::new("cfg_attr", Span::call_site())),
-                            // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                            //           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                            TokenTree::Group(Group::new(
-                                Delimiter::Parenthesis,
-                                TokenStream::from_iter(
-                                    // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                    //            ^^^^
-                                    cfg.clone().into_iter().chain([
-                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                        //                ^
-                                        TokenTree::Punct(Punct::new(',', Spacing::Alone)),
-                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                        //                  ^^
-                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                        //                    ^^^^
-                                        TokenTree::Ident(Ident::new("core", Span::call_site())),
-                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                        //                        ^^
-                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                        //                          ^^^^^^^
-                                        TokenTree::Ident(Ident::new("prelude", Span::call_site())),
-                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                        //                                 ^^
-                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                        //                                   ^^
-                                        TokenTree::Ident(Ident::new("v1", Span::call_site())),
-                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                        //                                     ^^
-                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                                        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                        //                                       ^^^^^^
-                                        TokenTree::Ident(Ident::new("derive", Span::call_site())),
-                                        // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                        //                                             ^^^^^^^
-                                        TokenTree::Group(Group::new(
-                                            Delimiter::Parenthesis,
-                                            // #[cfg_attr(true, ::core::prelude::v1::derive(Trait))]
-                                            //                                              ^^^^^
-                                            derive.into_tokens().collect(),
-                                        )),
-                                    ]),
-                                ),
-                            )),
-                        ]),
-                    )),
-                ]
-            })
-        });
-
-        TokenStream::from_iter(derive_macro_input.chain(item_tokens).chain(compile_errors))
-    }
+    other_attrs
 }
 
 /// Extracts derives and derive aliases from a #[derive] attribute.

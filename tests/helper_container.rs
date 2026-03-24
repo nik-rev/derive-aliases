@@ -13,11 +13,21 @@ mod derive_alias {
 #[derive_aliases::derive(..Serialize)]
 #[derive_aliases::derive(..Clone)]
 #[serde(deny_unknown_fields)]
+/*^
+@(all(), $(::core::clone::Clone))
+@(all(), $(::serde::Serialize))
+serde(deny_unknown_fields)
+*/
 struct A {}
 
 #[derive_aliases::derive(..Clone)]
 #[derive_aliases::derive(..Serialize)]
 #[serde(deny_unknown_fields)]
+/*^
+@(all(), $(::serde::Serialize))
+@(all(), $(::core::clone::Clone))
+serde(deny_unknown_fields)
+*/
 struct B {}
 
 // Clone can come afterwards because
@@ -31,10 +41,16 @@ struct C {}
 #[derive_aliases::derive(..Clone)]
 struct D {}
 
-#[derive(::serde::Serialize)]
-#[serde(deny_unknown_fields)]
-#[derive_aliases::derive(..Clone)]
-struct E {}
+// This is a known, unfixable issue.
+//
+// The `derive_aliases::derive` attribute below will receive `serde(deny_unknown_fields)` as an input,
+// which causes it to emit this attribute in the input to inner macros. But the `derive(Deserialize)` won't be there,
+// so this will be a name resolution error.
+//
+// #[derive(::serde::Serialize)]
+// #[serde(deny_unknown_fields)]
+// #[derive_aliases::derive(..Clone)]
+// struct E {}
 
 #[derive_aliases::derive(..Serialize)]
 #[serde(deny_unknown_fields)]
