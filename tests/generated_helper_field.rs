@@ -18,6 +18,10 @@ mod derive_alias {
 #[serde_with::skip_serializing_none]
 #[derive_aliases::derive(..Clone)]
 #[derive_aliases::derive(..Serialize)]
+/*^
+@(all(), $(::serde::Serialize))
+@(all(), $(::core::clone::Clone))
+*/
 struct A {
     field: Option<()>,
 }
@@ -25,6 +29,9 @@ struct A {
 #[serde_with::skip_serializing_none]
 #[derive(::core::clone::Clone)]
 #[derive_aliases::derive(..Serialize)]
+/*^
+@(all(), $(::serde::Serialize))
+*/
 struct A2 {
     field: Option<()>,
 }
@@ -32,6 +39,11 @@ struct A2 {
 #[derive_aliases::derive(..Clone)]
 #[serde_with::skip_serializing_none]
 #[derive_aliases::derive(..Serialize)]
+/*^
+@(all(), $(::serde::Serialize))
+@(all(), $(::core::clone::Clone))
+serde_with::skip_serializing_none
+*/
 struct B {
     field: Option<()>,
 }
@@ -39,6 +51,11 @@ struct B {
 #[derive_aliases::derive(..Clone)]
 #[serde_with::skip_serializing_none]
 #[derive(::serde::Serialize)]
+/*^
+@(all(), $(::serde::Serialize))
+@(all(), $(::core::clone::Clone))
+serde_with::skip_serializing_none
+*/
 struct B2 {
     field: Option<()>,
 }
