@@ -759,10 +759,10 @@ impl ResolvedAlias {
         //                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
         .chain(self.flat_derives.iter().flat_map(|derive| {
             // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
-            //            ^^^^^^^                        ^^^^^^^
+            //              ^^^                            ^^^
             //
             // TODO: Once we allow user to enter custom #[cfg] predicate, they will
-            // be able to do that here, For now this is just { true }.
+            // be able to do that here, For now this is just `any()`.
             let derive_cfg = cfg_true();
 
             // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
@@ -773,7 +773,11 @@ impl ResolvedAlias {
             //          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
             let derive = Group::new(
                 Delimiter::Bracket,
-                TokenStream::from_iter([derive_cfg].into_iter().chain(derive_path)),
+                TokenStream::from_iter(
+                    [TokenTree::Group(Group::new(Delimiter::Brace, derive_cfg))]
+                        .into_iter()
+                        .chain(derive_path),
+                ),
             );
 
             // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],

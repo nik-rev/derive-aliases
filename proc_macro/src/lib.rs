@@ -14,15 +14,16 @@ mod define;
 mod derive;
 mod tokens;
 
-/// Returns `{ true }`
-fn cfg_true() -> TokenTree {
-    TokenTree::Group(Group::new(
-        Delimiter::Brace,
-        TokenStream::from_iter([
-            TokenTree::Ident(Ident::new("all", Span::call_site())),
-            TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
-        ]),
-    ))
+fn encode_cfg_predicate(predicate: TokenStream) -> TokenStream {
+    TokenStream::from_iter([TokenTree::Group(Group::new(Delimiter::Brace, predicate))])
+}
+
+/// Returns `all()`, a cfg predicate that ,
+fn cfg_true() -> TokenStream {
+    TokenStream::from_iter([
+        TokenTree::Ident(Ident::new("all", Span::call_site())),
+        TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
+    ])
 }
 
 /// Define derive aliases that can be used in [`#[derive]`](derive)
@@ -79,12 +80,11 @@ pub fn define(tts: TokenStream) -> TokenStream {
 /// See the [crate-level](https://docs.rs/derive_aliases/latest/derive_aliases) documentation for details"
 #[proc_macro_attribute]
 pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
-    derive::derive(attr, item)
-}
+    let a = derive::derive(attr, item);
 
-#[proc_macro_attribute]
-pub fn foo(attr: TokenStream, item: TokenStream) -> TokenStream {
-    item
+    // panic!("{a}");
+
+    a
 }
 
 /// The macro **created** by `new_alias!` handles de-duplication just fine using a TT muncher. But the derives passed to `new_alias!` **must not**
@@ -204,11 +204,17 @@ pub fn __internal_derive_aliases_new_alias_with_externs(ts: TokenStream) -> Toke
         .into_iter()
         // now at the end we just add all of the tokens
         .chain(paths.into_iter().flat_map(|path| {
+            let cfg = cfg_true();
+
             // every path and its comma
             [
                 TokenTree::Group(Group::new(
                     Delimiter::Bracket,
-                    TokenStream::from_iter([cfg_true()].into_iter().chain(path.into_tokens())),
+                    TokenStream::from_iter(
+                        [TokenTree::Group(Group::new(Delimiter::Brace, cfg))]
+                            .into_iter()
+                            .chain(path.into_tokens()),
+                    ),
                 )),
                 TokenTree::Punct(Punct::new(',', Spacing::Joint)),
             ]

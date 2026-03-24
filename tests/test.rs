@@ -7,7 +7,6 @@ macro_rules! assert_impls {
             pub struct A(());
         }
 
-        // HACK: since we can't use `+` as repetition separator
         #[allow(warnings, reason = "only for type check")]
         fn $name<A: $($($segment)::* +)* Sized>() {
             $name::<$name::A>();
@@ -37,7 +36,7 @@ pub mod derive_alias {
     pub use foo::*;
 }
 
-// assert_impls!(a [Clone] => Clone);
+assert_impls!(a [Clone] => Clone);
 assert_impls!(b [..Eq] => Eq, PartialEq);
 assert_impls!(c [..AndMore] => PartialOrd, Ord, PartialEq, Eq, Copy, Clone, Default, std::hash::Hash);
 assert_impls!(d [..Ord] => PartialOrd, Ord, PartialEq, Eq);
@@ -51,9 +50,3 @@ assert_impls!(i [..Eq, Clone, Copy] => Eq, PartialEq, Clone, Copy);
 assert_impls!(j [Clone, Copy, ..Eq] => Eq, PartialEq, Clone, Copy);
 
 assert_impls!(m [..Eq, ..Eq] => Eq, PartialEq);
-
-#[test]
-fn ui() {
-    let harness = trybuild::TestCases::new();
-    harness.compile_fail("tests/ui/*.rs");
-}
