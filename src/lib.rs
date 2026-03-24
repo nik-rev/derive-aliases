@@ -226,6 +226,13 @@ pub use derive_aliases_proc_macro::derive;
 ///
 /// All of this must happen while keeping compile-times **extremely fast**.
 ///
+/// # Special tokens
+///
+/// - '%': This macro is being called as an extern alias.
+///
+///   What this means is that an alias from another invocation of `derive_aliases::define!` referred
+///   to this alias, so what we do is INJECT this alias's derives into the "extern alias"'s derive list.
+///
 /// # Example
 ///
 /// Here's the simplest possible example. It defines an alias `..Eq` which expands to `Eq, PartialEq`. This macro will be invoked from `crate::derive_alias` module.

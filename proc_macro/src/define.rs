@@ -11,10 +11,10 @@ use std::collections::HashSet;
 use tokens::Path;
 use tokens::TokensIter;
 
-pub fn define(tts: TokenStream) -> TokenStream {
+pub fn define(ts: TokenStream) -> TokenStream {
     // Whole input to the macro
     let mut ts = TokensIter {
-        stream: tts.into_iter().peekable(),
+        stream: ts.into_iter().peekable(),
         span: Span::call_site(),
     };
 
@@ -751,13 +751,18 @@ impl ResolvedAlias {
         // but `:path` specifiers can't be compared, so we compare `$($tt)*` in `[ $cfg:tt $($tt:tt)*]` instead,
         // and ignore the `$cfg`
         //
-        // That `cfg` is any `#[cfg(cfg)]` attributes the alias expects
+        // That `cfg` is any `#[cfg(cfg)]` attributes the alias expects, specifically
+        // it is the cfg predicate such as `any(feature = "a", target_os = "linux")`
         //
         // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
-        //          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        //          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        //                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
         .chain(self.flat_derives.iter().flat_map(|derive| {
             // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
             //            ^^^^^^^                        ^^^^^^^
+            //
+            // TODO: Once we allow user to enter custom #[cfg] predicate, they will
+            // be able to do that here, For now this is just { true }.
             let derive_cfg = cfg_true();
 
             // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
@@ -780,6 +785,9 @@ impl ResolvedAlias {
 
         // NOTE: Treat the last extern alias specially, because we'll actually invoke it.
         // The nested extern aliases will be invoked by this one, one-after-the-other
+        //
+        // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+        //                      ^^^ this is an "extern alias"
         if let Some(last_extern_alias) = self.extern_aliases.pop() {
             // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
             // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -809,6 +817,10 @@ impl ResolvedAlias {
                 TokenTree::Group(Group::new(
                     Delimiter::Brace,
                     TokenStream::from_iter([
+                        // This token is the indicator for the extern alias that the alias is being called as an EXTERN ALIAS.
+                        //
+                        // See documentation on the `derive_aliases::__internal_derive_aliases_new_alias!` for more info.
+                        //
                         // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],]] }
                         //                            ^
                         TokenTree::Punct(Punct::new('%', Spacing::Joint)),
@@ -816,9 +828,12 @@ impl ResolvedAlias {
                         //                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                         TokenTree::Group(Group::new(
                             Delimiter::Bracket,
+                            // We don't just have a single extern alias. We have multiple.
+                            //
+                            // Every extern alias's aliases are injected into the current alias list.
                             self.extern_aliases.into_iter().fold(
                                 TokenStream::from_iter(input_into_new_alias_macro),
-                                |acc, alias| {
+                                |input_into_new_alias_macro, alias| {
                                     TokenStream::from_iter([
                                         // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
                                         //                               ^^^^^
@@ -858,11 +873,14 @@ impl ResolvedAlias {
                                             ',',
                                             proc_macro::Spacing::Joint,
                                         )),
-                                        // Finally, add the input
+                                        // Finally, add the input to the macro.
                                         //
                                         // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
                                         //                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                                        TokenTree::Group(Group::new(Delimiter::Bracket, acc)),
+                                        TokenTree::Group(Group::new(
+                                            Delimiter::Bracket,
+                                            input_into_new_alias_macro,
+                                        )),
                                     ])
                                 },
                             ),
@@ -872,7 +890,8 @@ impl ResolvedAlias {
             ])
         } else {
             // SIMPLE, and the most common case: There are no extern aliases referenced! That means
-            // we can create the alias fully from memory, including the documentation
+            // we can create the alias fully from memory, including generation of documentation for
+            // each alias.
             //
             // ::derive_aliases::__internal_derive_aliases_new_alias! { "..." a $ Eq! [ { cfg } ::core::cmp::PartialEq], [ { cfg } ::core::cmp::Eq], }
             // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
