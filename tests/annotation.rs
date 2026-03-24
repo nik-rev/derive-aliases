@@ -14,7 +14,7 @@ use monostate::MustBe;
 use serde_cursor::Cursor;
 
 /// Tests with annotation comments
-const TESTS: &[&str] = &["helper_container"];
+const TESTS: &[&str] = &["helper_container", "generated_helper_field"];
 
 /// A temporary file that exists only for a brief moment in time
 ///
