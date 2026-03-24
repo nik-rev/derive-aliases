@@ -34,11 +34,21 @@ struct B {}
 #[derive_aliases::derive(..Serialize)]
 #[serde(deny_unknown_fields)]
 #[derive_aliases::derive(..Clone)]
+/*^
+@(all(), $(::core::clone::Clone))
+@(all(), $(::serde::Serialize))
+serde(deny_unknown_fields)
+*/
 struct C {}
 
 #[derive_aliases::derive(::serde::Serialize)]
 #[serde(deny_unknown_fields)]
 #[derive_aliases::derive(..Clone)]
+/*^
+@(all(), $(::serde::Serialize))
+@(all(), $(::core::clone::Clone))
+serde(deny_unknown_fields)
+*/
 struct D {}
 
 // This is a known, unfixable issue.
@@ -55,9 +65,19 @@ struct D {}
 #[derive_aliases::derive(..Serialize)]
 #[serde(deny_unknown_fields)]
 #[derive_aliases::derive(::core::clone::Clone)]
+/*^
+@(all(), $(::core::clone::Clone))
+@(all(), $(::serde::Serialize))
+serde(deny_unknown_fields)
+*/
 struct F {}
 
 #[derive_aliases::derive(..Serialize)]
 #[serde(deny_unknown_fields)]
 #[derive(::core::clone::Clone)]
+/*^
+@(all(), $(::core::clone::Clone))
+@(all(), $(::serde::Serialize))
+serde(deny_unknown_fields)
+*/
 struct G {}

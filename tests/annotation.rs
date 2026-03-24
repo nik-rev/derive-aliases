@@ -141,6 +141,16 @@ fn annotation() -> evil::Result {
                 )?
             };
 
+            let Some(expansion) = expansion
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.starts_with("to `#"))
+                .and_then(|expansion| expansion.strip_prefix("to `"))
+            else {
+                continue;
+            };
+
             // Find the last message that starts with an attribute:
             //
             // expanding `Clone! .....
@@ -150,11 +160,6 @@ fn annotation() -> evil::Result {
             //
             // Once we hit that '#', we have fully expanded all the derive aliases
             let actual_expansion = expansion
-                .messages
-                .iter()
-                .rev()
-                .find(|message| message.starts_with("to `#"))?
-                .strip_prefix("to `")?
                 // Remove whitespace, because it doesn't matter, and fluctutes a lot
                 .split_whitespace()
                 .join("");
