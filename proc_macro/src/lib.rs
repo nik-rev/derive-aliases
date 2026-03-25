@@ -1,4 +1,5 @@
 //! Implementation detail of the [`derive_aliases`](https://docs.rs/derive_aliases/latest/) crate.
+#![allow(rustdoc::invalid_rust_codeblocks)]
 
 use crate::tokens::IntoTokens;
 use crate::tokens::PathSeparator;
