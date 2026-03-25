@@ -79,7 +79,29 @@ pub fn define(tts: TokenStream) -> TokenStream {
 /// See the [crate-level](https://docs.rs/derive_aliases/latest/derive_aliases) documentation for details
 #[proc_macro_attribute]
 pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
-    derive::derive(attr, item)
+    derive::derive(TokenStream::new(), attr, item)
+}
+
+#[proc_macro]
+pub fn fold_attr(input: TokenStream) -> TokenStream {
+    let mut input = input.into_iter();
+
+    let attributes_before = match input.next() {
+        Some(TokenTree::Group(g)) => g.stream(),
+        _ => unreachable!(),
+    };
+
+    let derive_args = match input.next() {
+        Some(TokenTree::Group(g)) => g.stream(),
+        _ => unreachable!(),
+    };
+
+    let item = match input.next() {
+        Some(TokenTree::Group(g)) => g.stream(),
+        _ => unreachable!(),
+    };
+
+    derive::derive(attributes_before, derive_args, item)
 }
 
 /// The macro **created** by `new_alias!` handles de-duplication just fine using a TT muncher. But the derives passed to `new_alias!` **must not**

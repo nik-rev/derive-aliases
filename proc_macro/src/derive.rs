@@ -6,7 +6,7 @@ use proc_macro::{Delimiter, Group, Ident, Punct, Span, TokenStream, TokenTree};
 use tokens::Path;
 use tokens::TokensIter;
 
-pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn derive(attrs_before: TokenStream, attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut compile_errors = Vec::new();
 
     let ExtractedDerives {
@@ -14,7 +14,7 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         mut derive_aliases,
     } = extract_derives(attr, &mut compile_errors);
 
-    let mut regular_derives: Vec<Vec<Path>> = vec![regular_derives];
+    let regular_derives: Vec<Vec<Path>> = vec![regular_derives];
 
     // This currently holds the entire item.
     //
@@ -22,19 +22,7 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
     // and the non-processed ones will be placed into `other_attrs`
     //
     // It will be our job to put those attributes back when generating the code, before this stream
-    let mut item_tokens = item.into_iter().peekable();
-
-    // Attributes that we don't process, instead, they are kept as-is,
-    // and we must re-emit them
-    let attributes_to_re_emit = extract_attributes(
-        &mut compile_errors,
-        &mut regular_derives,
-        &mut derive_aliases,
-        &mut item_tokens,
-    );
-
-    // Tokens of the item, with all non-derive attributes inserted back
-    let item_tokens = attributes_to_re_emit.into_iter().chain(item_tokens);
+    let item_tokens = item.into_iter().peekable();
 
     // all the tokens for "compile_error!(...)" invocations, to be inserted
     // alongside all other input
@@ -82,6 +70,8 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
             // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [[Debug,] [Clone]] [struct Foo;])) [] }
             //                                                                                 ^
             TokenTree::Punct(Punct::new('@', Spacing::Joint)),
+            // TODO: explain
+            TokenTree::Group(Group::new(Delimiter::Parenthesis, attrs_before)),
             // crate::derive_alias::Ord! { crate::derive_alias::Eq,(crate::derive_alias::Copy,(@ [[Debug,] [Clone]] [struct Foo;])) [] }
             //                                                                                   ^^^^^^^^^^^^^^^^^^
             TokenTree::Group(Group::new(Delimiter::Bracket, regular_derives.collect())),
@@ -246,8 +236,9 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // The item with #[derive] attribute applied at the top
         let ts = TokenStream::from_iter(
-            derive_attr
+            attrs_before
                 .into_iter()
+                .chain(derive_attr)
                 .chain(item_tokens)
                 .chain(compile_errors),
         );
@@ -274,142 +265,6 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
             ts
         }
     }
-}
-
-/// Loop through every attribute on the item
-///
-/// ```ignore
-/// #[attr1]
-/// #[attr2]
-/// #[attr3]
-/// #[attr4]
-/// struct Item;
-/// ```
-///
-/// Attributes that are `#[derive(..)]`-like will
-/// have their contents parsed and the derive aliases / derives will all be
-/// handled by a single proc macro call
-///
-/// Multiple `#[derive_aliases::derive]` calls will "merge" into a single one:
-///
-/// ```ignore
-/// #[derive(..Eq, Clone)]
-/// #[serde(deny_unknown_fields)]
-/// #[derive(..Ord, Copy)]
-/// #[derive(Serialize, Deserialize)]
-/// struct Item;
-/// ```
-///
-/// All of those attributes will actually act as if the user wrote this instead:
-///
-/// ```ignore
-/// #[derive(..Eq, Clone, ..Ord, Copy, Serialize, Deserialize)]
-/// #[serde(deny_unknown_fields)]
-/// struct Item;
-/// ```
-///
-/// Notably:
-///
-/// - What the user wrote should fail compilation. The `serde` helper attribute is only available
-///   *after* the derive macro, but the user wrote them in reverse order. Because of our macro, it will compile
-/// - The order in which the aliases/derives are actually evaluated is completely unspecified
-///
-/// Why do this?
-///
-/// Because we're mimicking what the `core::derive` macro actually does, we need to consider helper attributes.
-/// Derive helper attributes work via name resolution. But in a macro context, we don't have access to the name resolution,
-/// so we must try best-effort.
-///
-/// Earlier, we would have each `derive_aliases::derive` attribute handle its own logic and wrapping.
-/// This didn't work because there were issues with helper attribute namespace being invalidated after the first
-/// attribute was expanded, so instead all work is done by a single attribute.
-///
-/// This does mean that the user can't actually use a different name for the `derive` attribute,
-/// only a hard-coded set of paths is read from, namely `derive`, `derive_aliases::derive`,
-/// and `derive_aliases::derive`
-fn extract_attributes(
-    compile_errors: &mut Vec<CompileError>,
-    regular_derives: &mut Vec<Vec<Path>>,
-    derive_aliases: &mut Vec<Ident>,
-    item_tokens: &mut std::iter::Peekable<proc_macro::token_stream::IntoIter>,
-) -> TokenStream {
-    let mut other_attrs = TokenStream::new();
-
-    loop {
-        match item_tokens
-            .peek()
-            .expect("we only parse attrs, not actual item")
-        {
-            // An attribute
-            TokenTree::Punct(punct) if *punct == '#' => {
-                // #[attr]
-                // ^
-                let attr_hash = item_tokens.next().unwrap();
-                // #[attr(ibute)]
-                //   ^^^^^^^^^^^
-                let Some(TokenTree::Group(attr_brackets)) = item_tokens.next() else {
-                    unreachable!()
-                };
-                let mut attr_stream = TokensIter {
-                    stream: attr_brackets.stream().into_iter().peekable(),
-                    span: Span::call_site(),
-                };
-
-                // #[attr(ibute)]
-                //   ^^^^
-                let attr_path = attr_stream.path().expect("attribute always has a path");
-
-                // The step where, if the the attribute is #[derive(..)] or #[cfg_attr(.., derive(..))] - the contents are parsed
-                // If it is not, the attribute is re-emitted
-                if matches!(
-                    attr_path.to_string().as_str(),
-                    "derive" | "derive_aliases::derive" | "::derive_aliases::derive"
-                ) {
-                    // A top-level `derive` attribute
-                    let Some(derive_stream) = attr_stream.group(Delimiter::Parenthesis) else {
-                        // No error on purpose.
-                        continue;
-                    };
-
-                    // Extract derives from this derive macro. It could also be aliases, too.
-                    //
-                    // #[derive(Clone, Copy)]
-                    //          ^^^^^^^^^^^
-                    let derives = extract_derives(derive_stream, compile_errors);
-
-                    regular_derives.push(derives.regular_derives);
-                    for alias in derives.derive_aliases {
-                        derive_aliases.push(alias);
-                    }
-                    // This is not a #[derive(..)], nor is it a #[cfg_attr(predicate, derive(..))].
-                    // It is any other attribute, e.g. `#[doc]`
-                    //
-                    // Restore the original attribute that the user wrote
-                } else {
-                    // Re-construct the original attribute contents: [...]
-                    let mut group = Group::new(
-                        Delimiter::Bracket,
-                        TokenStream::from_iter(attr_path.into_tokens().chain(attr_stream.stream)),
-                    );
-                    group.set_span(attr_brackets.span());
-
-                    // Add back the entire attribute
-                    //
-                    // #[doc = "whatever"]
-                    other_attrs.extend([attr_hash, TokenTree::Group(group)]);
-                    continue;
-                }
-            }
-            // The item has been reached, all attributes were processed
-            //
-            // #[attrs]
-            // struct Item;
-            // ^^^^^^
-            _ => break,
-        }
-    }
-
-    other_attrs
 }
 
 /// Extracts derives and derive aliases from a `#[derive]` attribute.

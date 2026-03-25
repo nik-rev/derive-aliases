@@ -213,6 +213,9 @@ pub use derive_aliases_proc_macro::define;
 #[doc(inline)]
 pub use derive_aliases_proc_macro::derive;
 
+#[doc(hidden)]
+pub use derive_aliases_proc_macro::fold_attr;
+
 /// This is the main macro that makes `derive_aliases` possible
 ///
 /// At a high level:
@@ -567,6 +570,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                 //
                 // Now let's forward to the inner alias to process further
                 (#
+                    $_ attrs_before:tt
+
                     // <next-alias>
                     [$_ ( $_ Alias_path:tt )*]
 
@@ -588,6 +593,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                     //
                     // <next-alias>
                     $_ ( $_ Alias_path )* ! {
+                        $_ attrs_before
+
                         // Call insides of the macro
                         //
                         // <next-alias-args>
@@ -623,6 +630,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                 $(
                     // Remove a single CURRENT derive from the set
                     (#
+                        $_ attrs_before:tt
+
                         // <next-alias>
                         $_ next_alias:tt
 
@@ -657,6 +666,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                         crate::derive_alias::$NAME! {
                             #
 
+                            $_ attrs_before
+
                             // <next-alias>
                             $_ next_alias
 
@@ -680,6 +691,8 @@ macro_rules! __internal_derive_aliases_new_alias {
 
                 // Everything else is just added as-is
                 (#
+                    $_ attrs_before:tt
+
                     // <next-alias>
                     $_ next_alias:tt
                     // <next-alias-args>
@@ -711,6 +724,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                     crate::derive_alias::$NAME! {
                         // <next-alias>
                         #
+
+                        $_ attrs_before
 
                         $_ next_alias
 
@@ -759,6 +774,10 @@ macro_rules! __internal_derive_aliases_new_alias {
                 //
                 // Copy! { ? [Debug,][struct Foo;] [] [[Ord], [PartialOrd], [PartialEq],] }
                 (?
+                    (
+                        $_($_ attrs_before:tt)*
+                    )
+
                     // <regular-derives>
                     [$_(
                         // <regular-derive>
@@ -791,35 +810,43 @@ macro_rules! __internal_derive_aliases_new_alias {
                         ],
                     )*]
                 ) => {
-                    // All derives that did not come from an expansion
-                    //
-                    // <regular-derives>
-                    $_(
-                        #[cfg_attr(
-                            $_($_ regular_derives_cfg)*,
-                            ::core::prelude::v1::derive($_($_ regular_derives)*)
-                        )]
-                    )*
+                    crate::derive_alias::$NAME! { =
+                        (
+                            $_($_ attrs_before)*
 
-                    // Derives that were de-duplicated for THIS alias
-                    //
-                    // <derive-paths>
-                    $_(
-                        #[cfg_attr(
-                            $_($_ deduplicated_cfg)*,
-                            ::core::prelude::v1::derive($_ deduplicated)
-                        )]
-                    )*
+                            // All derives that did not come from an expansion
+                            //
+                            // <regular-derives>
+                            $_(
+                                #[cfg_attr(
+                                    $_($_ regular_derives_cfg)*,
+                                    ::core::prelude::v1::derive($_($_ regular_derives)*)
+                                )]
+                            )*
 
-                    // Derives that come as a result of expansion of THIS alias
-                    $(
-                        #[cfg_attr(
-                            $($derives_cfg)*,
-                            ::core::prelude::v1::derive($($derives)*)
-                        )]
-                    )*
+                            // Derives that were de-duplicated for THIS alias
+                            //
+                            // <derive-paths>
+                            $_(
+                                #[cfg_attr(
+                                    $_($_ deduplicated_cfg)*,
+                                    ::core::prelude::v1::derive($_ deduplicated)
+                                )]
+                            )*
 
-                    $_ ($_ item) *
+                            // Derives that come as a result of expansion of THIS alias
+                            $(
+                                #[cfg_attr(
+                                    $($derives_cfg)*,
+                                    ::core::prelude::v1::derive($($derives)*)
+                                )]
+                            )*
+                        )
+
+                        [
+                            $_ ($_ item) *
+                        ]
+                    }
                 };
 
                 ///////////////////////////////////////////////////////////////
@@ -827,6 +854,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                 // Remove each derive from the set
                 $(
                     (?
+                        $_ attrs_before:tt
+
                         // <regular-derives>
                         $regular_derives:tt
                         // <item>
@@ -855,6 +884,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                         )*]
                     ) => {
                         crate::derive_alias::$NAME! { ?
+                            $_ attrs_before
+
                             // <regular-derives>
                             $_ regular_derives
                             // <item>
@@ -878,6 +909,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                 )*
                 // Everything else is just added as-is
                 (?
+                    $_ attrs_before:tt
+
                     // <regular-derives>
                     $_ regular_derives:tt
                     // <item>
@@ -905,6 +938,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                     ]
                 ) => {
                     crate::derive_alias::$NAME! { ?
+                        $_ attrs_before
+
                         // <regular-derives>
                         $_ regular_derives
                         // <item>
@@ -934,6 +969,8 @@ macro_rules! __internal_derive_aliases_new_alias {
 
                 // Reached the base case. No more nested aliases
                 (@
+                    $_ attrs_before:tt
+
                     // <regular-derives>
                     $_ regular_derives:tt
                     // <item>
@@ -946,6 +983,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                 ) => {
                     // Add the existing derives but de-duplicate
                     crate::derive_alias::$NAME! { ?
+                        $_ attrs_before
+
                         // <regular-derives>
                         $_ regular_derives
                         // <item>
@@ -977,6 +1016,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                 ///////////////////////////////////////////////////////////////
 
                 (
+                    $_ attrs_before:tt
+
                     // <next-alias>
                     $_ next_alias:tt
 
@@ -991,6 +1032,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                 ) => {
                     // BEGIN the de-duplication process
                     crate::derive_alias::$NAME! { #
+                        $_ attrs_before
+
                         // <next-alias>
                         $_ next_alias
 
@@ -1014,6 +1057,8 @@ macro_rules! __internal_derive_aliases_new_alias {
 
                 // entrypoint for creating alias
                 { %
+                    $_ attrs_before:tt
+
                     // head
                     [
                         [
@@ -1030,6 +1075,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                     )*
                 } => {
                     $_($_ NextAlias)* ! { %
+                        $_ attrs_before
+
                         // tail
                         $_ NextAlias_args
 
@@ -1066,6 +1113,8 @@ macro_rules! __internal_derive_aliases_new_alias {
                 // ]
                 // BASE CASE: Reached end of the alias accumulation, create the alias
                 { %
+                    $_ attrs_before:tt
+
                     [ $_ ($_ tt:tt)* ]
 
                     //////// ACCUMULATOR: START
@@ -1077,6 +1126,8 @@ macro_rules! __internal_derive_aliases_new_alias {
 
                     // create the alias
                     $crate::__internal_derive_aliases_new_alias_with_externs! {
+                        $_ attrs_before
+
                         $_ ( $_ tt )*
 
                         //////// ACCUMULATOR: START
@@ -1090,6 +1141,92 @@ macro_rules! __internal_derive_aliases_new_alias {
 
                         //////// ACCUMULATOR: END
                     }
+                };
+
+
+                /////////// All of these steps are the same, they just have
+
+                (=
+                    $_ attrs_before:tt
+
+                    [
+                        #[derive $_ derive_args:tt]
+                        $_($_ item:tt)*
+                    ]
+                ) => {
+                    ::derive_aliases::fold_attr! {
+                        $_ attrs_before
+                        $_ derive_args
+                        [$_($_ item)*]
+                    }
+                };
+                (=
+                    $_ attrs_before:tt
+
+                    [
+                        #[derive_aliases::derive $_ derive_args:tt]
+                        $_($_ item:tt)*
+                    ]
+                ) => {
+                    ::derive_aliases::fold_attr! {
+                        $_ attrs_before
+                        $_ derive_args
+                        [$_($_ item)*]
+                    }
+                };
+                (=
+                    $_ attrs_before:tt
+
+                    [
+                        #[::derive_aliases::derive $_ derive_args:tt]
+                        $_($_ item:tt)*
+                    ]
+                ) => {
+                    ::derive_aliases::fold_attr! {
+                        $_ attrs_before
+                        $_ derive_args
+                        [$_($_ item)*]
+                    }
+                };
+
+                // not a derive attribute, add it to the list
+
+                (=
+                    (
+                        $_($_ attrs_before:tt)*
+                    )
+
+                    [
+                        #[$_($_ attr:tt)*]
+                        $_($_ item:tt)*
+                    ]
+                ) => {
+                    crate::derive_alias::$NAME! { =
+                        (
+                            $_($_ attrs_before)*
+                            #[$_($_ attr)*]
+                        )
+
+                        [
+                            $_($_ item)*
+                        ]
+                    }
+                };
+
+                // no more attributes on item at ALL, emit item with all attributes
+                //
+                // THIS IS THE FINAL ARM.
+                (=
+                    (
+                        $_($_ attrs:tt)*
+                    )
+
+                    [
+                        $_($_ item:tt)*
+                    ]
+                ) => {
+                    $_($_ attrs)*
+                    $_($_ item)*
                 };
             }
         }
