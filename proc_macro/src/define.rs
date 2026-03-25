@@ -762,7 +762,7 @@ impl ResolvedAlias {
             //              ^^^                            ^^^
             //
             // TODO: Once we allow user to enter custom #[cfg] predicate, they will
-            // be able to do that here, For now this is just `any()`.
+            // be able to do that here, For now this is just `all()`.
             let derive_cfg = cfg_true();
 
             // a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],
@@ -839,47 +839,49 @@ impl ResolvedAlias {
                                 TokenStream::from_iter(input_into_new_alias_macro),
                                 |input_into_new_alias_macro, alias| {
                                     TokenStream::from_iter([
-                                        // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
-                                        //                               ^^^^^
-                                        TokenTree::Ident(Ident::new("crate", Span::call_site())),
-                                        // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
-                                        //                                    ^^
-                                        TokenTree::Punct(Punct::new(
-                                            ':',
-                                            proc_macro::Spacing::Joint,
-                                        )),
-                                        TokenTree::Punct(Punct::new(
-                                            ':',
-                                            proc_macro::Spacing::Joint,
-                                        )),
-                                        // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
-                                        //                                      ^^^^^^^^^^^^
-                                        TokenTree::Ident(Ident::new(
-                                            "derive_alias",
-                                            Span::call_site(),
-                                        )),
-                                        // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
-                                        //                                                  ^^
-                                        TokenTree::Punct(Punct::new(
-                                            ':',
-                                            proc_macro::Spacing::Joint,
-                                        )),
-                                        TokenTree::Punct(Punct::new(
-                                            ':',
-                                            proc_macro::Spacing::Joint,
-                                        )),
-                                        // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
-                                        //                                                    ^^
-                                        TokenTree::Ident(alias),
-                                        // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
-                                        //                                                      ^
-                                        TokenTree::Punct(Punct::new(
-                                            ',',
-                                            proc_macro::Spacing::Joint,
+                                        TokenTree::Group(Group::new(
+                                            Delimiter::Bracket,
+                                            TokenStream::from_iter([
+                                                // crate::derive_alias::Ord! {% [[crate::derive_alias::Eq][a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+                                                //                                ^^^^^
+                                                TokenTree::Ident(Ident::new(
+                                                    "crate",
+                                                    Span::call_site(),
+                                                )),
+                                                // crate::derive_alias::Ord! {% [[crate::derive_alias::Eq][a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+                                                //                                     ^^
+                                                TokenTree::Punct(Punct::new(
+                                                    ':',
+                                                    proc_macro::Spacing::Joint,
+                                                )),
+                                                TokenTree::Punct(Punct::new(
+                                                    ':',
+                                                    proc_macro::Spacing::Joint,
+                                                )),
+                                                // crate::derive_alias::Ord! {% [[crate::derive_alias::Eq][a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+                                                //                                       ^^^^^^^^^^^^
+                                                TokenTree::Ident(Ident::new(
+                                                    "derive_alias",
+                                                    Span::call_site(),
+                                                )),
+                                                // crate::derive_alias::Ord! {% [[crate::derive_alias::Eq][a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+                                                //                                                   ^^
+                                                TokenTree::Punct(Punct::new(
+                                                    ':',
+                                                    proc_macro::Spacing::Joint,
+                                                )),
+                                                TokenTree::Punct(Punct::new(
+                                                    ':',
+                                                    proc_macro::Spacing::Joint,
+                                                )),
+                                                // crate::derive_alias::Ord! {% [[crate::derive_alias::Eq][a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+                                                //                                                     ^^
+                                                TokenTree::Ident(alias),
+                                            ]),
                                         )),
                                         // Finally, add the input to the macro.
                                         //
-                                        // crate::derive_alias::Ord! {% [crate::derive_alias::Eq,[a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
+                                        // crate::derive_alias::Ord! {% [[crate::derive_alias::Eq][a $ Foo! [ { cfg } ::core::hash::Hash], [ { cfg } ::core::fmt::Debug],] ] }
                                         //                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                                         TokenTree::Group(Group::new(
                                             Delimiter::Bracket,

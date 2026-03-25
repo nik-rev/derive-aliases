@@ -14,7 +14,7 @@ use monostate::MustBe;
 use serde_cursor::Cursor;
 
 /// Tests with annotation comments
-const TESTS: &[&str] = &["helper_container", "generated_helper_field"];
+const TESTS: &[&str] = &["helper_container", "generated_helper_field", "helper_field"];
 
 /// A temporary file that exists only for a brief moment in time
 ///
@@ -282,6 +282,7 @@ fn get_trace_macro_output(test_contents: &str) -> evil::Result<Vec<ExpansionMacr
 
     let output = Command::new(env!("CARGO"))
         .arg("check")
+        .env("DERIVE_ALIASES_ANNOTATION_TEST", "1")
         .arg("--test")
         .arg("tmp-annotation")
         .arg("--message-format")
