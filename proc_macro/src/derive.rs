@@ -412,7 +412,7 @@ fn extract_attributes(
     other_attrs
 }
 
-/// Extracts derives and derive aliases from a #[derive] attribute.
+/// Extracts derives and derive aliases from a `#[derive]` attribute.
 ///
 /// Given:
 ///
