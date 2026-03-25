@@ -192,6 +192,7 @@ version = "0.4.9"
 dependencies = [
  "annotate-snippets",
  "anstream",
+ "derive_aliases",
  "derive_aliases_proc_macro",
  "evil",
  "fs-err",

@@ -204,6 +204,7 @@
 // //! ```
 // //!
 // //! For details, hover over `#![export_derive_aliases]` in your editor
+#![cfg_attr(feature = "__integration_test", feature(macro_metavar_expr))]
 #![no_std]
 #![allow(clippy::crate_in_macro_def)]
 
@@ -1217,33 +1218,100 @@ macro_rules! __internal_derive_aliases_new_alias {
                 //
                 // THIS IS THE FINAL ARM.
                 (=
-                    (
-                        $_($_ attrs:tt)*
-                    )
-
-                    [
-                        $_($_ item:tt)*
-                    ]
+                    $_ attrs:tt
+                    $_ item:tt
                 ) => {
-                    $_($_ attrs)*
-                    $_($_ item)*
+                    $_ crate::output_tokens! { $_ attrs $_ item }
                 };
-
-                // (=
-                //     (
-                //         $_($_ attrs:tt)*
-                //     )
-
-                //     [
-                //         $_($_ item:tt)*
-                //     ]
-                // ) => {
-                //     $_($_ attrs)*
-                //     $_($_ item)*
-                // };
             }
         }
     }
+}
+
+#[doc(hidden)]
+#[cfg(not(feature = "__integration_test"))]
+#[macro_export]
+macro_rules! output_tokens {
+    (
+        (
+            $($attrs:tt)*
+        )
+
+        [
+            $($item:tt)*
+        ]
+    ) => {
+        $($attrs)*
+        $($item)*
+    };
+}
+
+#[doc(hidden)]
+#[cfg(feature = "__integration_test")]
+#[macro_export]
+macro_rules! output_tokens {
+    (
+        (
+            $($attrs:tt)*
+        )
+
+        [
+            $vis:vis $kw:ident $Name:ident
+            $($item:tt)*
+        ]
+    ) => {
+        $($attrs)*
+        $vis $kw $Name $($item)*
+
+        $Name! { [$($item)*] $($attrs)* }
+    };
+}
+
+/// Tests the expansion of `derive_aliases::derive` macro.
+#[cfg(feature = "__integration_test")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! test {
+    ($ident:ident $($expected_attr:tt)*) => {
+        // expansion of `derive_aliases::derive` will call this macro.
+        //
+        // as an argument, this macro receives the attributes of the expansion.
+        macro_rules! $ident {
+            ([$$($$item:tt)*]
+                $($expected_attr)*
+            ) => {
+                impl $ident {
+                    #[allow(nonstandard_style)]
+                    const TEST_ATTR: &str = "";
+                    #[allow(nonstandard_style)]
+                    const TEST_ITEM: &str = "";
+                }
+            };
+            ([$$($$item:tt)*]
+                $$($$actual_attr:tt)*
+            ) => {
+                impl $ident {
+                    #[allow(nonstandard_style)]
+                    const TEST_ATTR: &str = stringify!($$($$actual_attr)*);
+                    #[allow(nonstandard_style)]
+                    const TEST_ITEM: &str = stringify!($$($$actual_attr)*);
+                }
+            };
+        }
+
+        #[test]
+        #[allow(nonstandard_style)]
+        fn $ident() {
+            if !$ident::TEST_ATTR.is_empty() {
+                pretty_assertions::assert_str_eq!(
+                    ::itertools::Itertools::join(&mut $ident::TEST_ATTR.split_whitespace(), ""),
+                    ::itertools::Itertools::join(&mut stringify!($($expected_attr)*).split_whitespace(), ""),
+                    "derive alias expansion failed: {}",
+                    $ident::TEST_ITEM
+                );
+            }
+        }
+    };
 }
 
 #[doc(hidden)]

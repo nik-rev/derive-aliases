@@ -26,8 +26,13 @@ license = "MIT OR Apache-2.0"
 keywords = ["macros", "derive", "alias", "macro_rules_attribute", "proc-macro"]
 categories = ["development-tools", "development-tools::procedural-macro-helpers", "no-std", "no-std::no-alloc", "rust-patterns"]
 
+[features]
+# internal feature, for test suite of `derive_aliases`
+__integration_test = ["derive_aliases_proc_macro/__integration_test"]
+
 [dev-dependencies]
 # only used in doc example
+derive_aliases = { path = ".", features = ["__integration_test"] }
 zerocopy = { version = "0.8", features = ["derive"] }
 trybuild = "1.0"
 serde = { version = "1.0.228", features = ["derive"] }

@@ -82,6 +82,7 @@ pub fn derive(attr: TokenStream, item: TokenStream) -> TokenStream {
     derive::derive(TokenStream::new(), attr, item)
 }
 
+#[doc(hidden)]
 #[proc_macro]
 pub fn fold_attr(input: TokenStream) -> TokenStream {
     let mut input = input.into_iter();

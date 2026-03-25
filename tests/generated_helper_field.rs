@@ -7,6 +7,11 @@
 //! NOTE: the #[skip_serializing_none] needs to be
 //! placed before the `#[derive(Serialize)]`
 #![allow(unused)]
+#![feature(macro_metavar_expr, macro_metavar_expr_concat)]
+
+macro_rules! assert_attrs {
+    () => {};
+}
 
 use core::prelude::v1::derive as std_derive;
 use derive_aliases::derive;
@@ -18,70 +23,77 @@ mod derive_alias {
     }
 }
 
+struct Attrs;
+
+// macro_rules! A {
+//     (
+//     ) => {};
+//     ($($tt:tt)*) => {
+//         compile_error!(concat!("ACTUAL: ", stringify!($($tt)*)));
+//     };
+// }
+
+derive_aliases::test! { A
+    #[cfg_attr(all(), ::core::prelude::v1::derive(::core::clone::Clone))]
+    #[cfg_attr(all(), ::core::prelude::v1::derive(::serde::Serialize))]
+}
+
 #[serde_with::skip_serializing_none]
 #[derive(..Clone)]
 #[derive(..Serialize)]
-/*^
-@(all(), $(::serde::Serialize))
-@(all(), $(::core::clone::Clone))
-*/
 struct A {
     field: Option<()>,
 }
 
-#[serde_with::skip_serializing_none]
-#[std_derive(::core::clone::Clone)]
-#[derive(..Serialize)]
-/*^
-@(all(), $(::serde::Serialize))
-*/
-struct A2 {
-    field: Option<()>,
-}
-
-#[derive(..Clone)]
-#[serde_with::skip_serializing_none]
-#[derive(..Serialize)]
-/*^
-@(all(), $(::serde::Serialize))
-@(all(), $(::core::clone::Clone))
-serde_with::skip_serializing_none
-*/
-struct B {
-    field: Option<()>,
-}
-
-#[derive(Clone)]
-#[serde_with::skip_serializing_none]
-#[std_derive(::serde::Serialize)]
-/*^
-@(all(), $(::serde::Serialize))
-@(all(), $(::core::clone::Clone))
-serde_with::skip_serializing_none
-*/
-struct BM {
-    field: Option<()>,
-}
-
-mod b {
-    use super::*;
-
-    #[derive_aliases::derive(..Clone)]
-    #[serde_with::skip_serializing_none]
-    #[std_derive(::serde::Serialize)]
-    /*^
-    @(all(), $(::serde::Serialize))
-    @(all(), $(::core::clone::Clone))
-    serde_with::skip_serializing_none
-    */
-    struct B2 {
-        field: Option<()>,
-    }
-}
-
-// #[test]
-// fn must() {
-//     let s = serde_json::to_string(&B { field: None }).unwrap();
-
-//     panic!("{s}");
+// #[serde_with::skip_serializing_none]
+// #[std_derive(::core::clone::Clone)]
+// #[derive(..Serialize)]
+// /*^
+// @(all(), $(::serde::Serialize))
+// */
+// struct A2 {
+//     pub field: Option<()>,
 // }
+
+// #[derive(..Clone)]
+// #[serde_with::skip_serializing_none]
+// #[derive(..Serialize)]
+// /*^
+// @(all(), $(::serde::Serialize))
+// @(all(), $(::core::clone::Clone))
+// serde_with::skip_serializing_none
+// */
+// struct B {
+//     field: Option<()>,
+// }
+
+// #[derive(Clone)]
+// #[serde_with::skip_serializing_none]
+// #[std_derive(::serde::Serialize)]
+// /*^
+// @(all(), $(::serde::Serialize))
+// @(all(), $(::core::clone::Clone))
+// serde_with::skip_serializing_none
+// */
+// struct BM {
+//     field: Option<()>,
+// }
+
+// #[derive_aliases::derive(..Clone)]
+// #[serde_with::skip_serializing_none]
+// #[std_derive(::serde::Serialize)]
+// /*^
+// @(all(), $(::serde::Serialize))
+// @(all(), $(::core::clone::Clone))
+// serde_with::skip_serializing_none
+// */
+// struct B2 {
+//     field: Option<()>,
+// }
+
+// // #[test]
+// // fn must() {
+// //     let s = serde_json::to_string(&B { field: None }).unwrap();
+
+// //     panic!("{s}");
+// // }
