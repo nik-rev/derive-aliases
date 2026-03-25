@@ -1228,6 +1228,19 @@ macro_rules! __internal_derive_aliases_new_alias {
                     $_($_ attrs)*
                     $_($_ item)*
                 };
+
+                // (=
+                //     (
+                //         $_($_ attrs:tt)*
+                //     )
+
+                //     [
+                //         $_($_ item:tt)*
+                //     ]
+                // ) => {
+                //     $_($_ attrs)*
+                //     $_($_ item)*
+                // };
             }
         }
     }
