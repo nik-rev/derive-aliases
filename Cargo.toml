@@ -43,3 +43,6 @@ itertools = "0.14.0"
 annotate-snippets = "0.12.13"
 anstream = "1.0.0"
 pretty_assertions = "1.4.1"
+
+[lints.rust]
+unexpected-cfgs = "allow"

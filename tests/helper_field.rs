@@ -15,14 +15,16 @@ mod derive_alias {
 #[derive_aliases::derive(..Serialize)]
 #[derive_aliases::derive(..Clone)]
 /*^
-$(::serde::Serialize,)
-$(::core::clone::Clone,)
+@(all(), $(::core::clone::Clone))
+@(all(), $(::serde::Serialize))
 */
 struct A {
     #[serde(skip_serializing_if = "Option::is_none")]
     field: Option<()>,
 }
 
+// This is a known issue.
+//
 // #[derive(serde::Serialize)]
 // #[derive_aliases::derive(..Clone)]
 // struct A2 {
@@ -35,8 +37,8 @@ struct A {
 #[derive_aliases::derive(..Clone)]
 #[derive_aliases::derive(..Serialize)]
 /*^
-$(::core::clone::Clone,)
-$(::serde::Serialize,)
+@(all(), $(::serde::Serialize))
+@(all(), $(::core::clone::Clone))
 */
 struct B {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,8 +48,7 @@ struct B {
 #[derive(core::clone::Clone)]
 #[derive_aliases::derive(..Serialize)]
 /*^
-$(::core::clone::Clone,)
-$(::serde::Serialize,)
+@(all(), $(::serde::Serialize))
 */
 struct B2 {
     #[serde(skip_serializing_if = "Option::is_none")]
